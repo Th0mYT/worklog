@@ -216,4 +216,4 @@ Edit `config.py` to add apps to the right category. The poller uses these to tag
 
 ## License
 
-MIT
+[GPLv3](https://github.com/Th0mYT/worklog/tree/main?tab=GPL-3.0-1-ov-file)
