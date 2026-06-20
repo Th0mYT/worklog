@@ -1,0 +1,33 @@
+# worklog configuration
+# Copy this file to ~/.worklog/config.toml and fill in your values.
+
+# Where daily .jsonl log files are stored (~ is expanded)
+logs_dir = "~/.worklog/logs"
+
+# How often the activity poller captures a snapshot (seconds)
+poll_interval = 300
+
+# Seconds of keyboard/mouse inactivity before the poller pauses.
+# Resumes automatically when input is detected again. (default: 300)
+inactivity_timeout = 300
+
+# Git author filter — matched against commit author name or email.
+# Leave empty to include all authors.
+git_author = "yourname"
+
+# Absolute paths to the git repos you want enriched in daily summaries
+git_repos = [
+    "/Users/you/projects/repo-one",
+    "/Users/you/projects/repo-two",
+]
+
+# Summarizer backend: "ollama" (default, single model) or "council" (llm-council, needs beefy hardware)
+summarizer_backend = "ollama"
+
+# Ollama settings (used when summarizer_backend = "ollama")
+ollama_url   = "http://localhost:11434"
+ollama_model = "qwen2.5:7b"
+
+# llm-council API base URL (used when summarizer_backend = "council")
+# https://github.com/Th0mYT/llm-council
+council_url = "http://localhost:8001"

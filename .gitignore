@@ -1,0 +1,24 @@
+# Logs and personal config (never commit)
+logs/
+worklog.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.uv/
+
+# Generated assets (produced by make_icon.py / build_dmg.sh)
+assets/worklog.icns
+assets/worklog.iconset/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
