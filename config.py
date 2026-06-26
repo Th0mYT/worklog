@@ -78,5 +78,7 @@ class Config:
     OLLAMA_MODEL: str       = _cfg.get('ollama_model', 'qwen2.5:7b')
     COUNCIL_URL: str        = _cfg.get('council_url', 'http://localhost:8001')
     CLAUDE_MODEL: str       = _cfg.get('claude_model', '')
+    ANTHROPIC_API_KEY: str  = _cfg.get('anthropic_api_key', '') or os.environ.get('ANTHROPIC_API_KEY', '')
+    ANTHROPIC_MODEL: str    = _cfg.get('anthropic_model', 'claude-haiku-4-5')
     OPENAI_API_KEY: str     = _cfg.get('openai_api_key', '') or os.environ.get('OPENAI_API_KEY', '')
     OPENAI_MODEL: str       = _cfg.get('openai_model', 'gpt-4o-mini')

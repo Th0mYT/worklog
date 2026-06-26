@@ -4,7 +4,7 @@ Offline PC activity tracker with AI-powered daily summaries.
 
 worklog runs quietly in the background, capturing what app and window is active every few minutes and enriching it with git commit history from your repos. At the end of the day, an LLM turns that raw log into a clean timesheet you can paste straight into your tracker.
 
-No data leaves your machine unless you choose a cloud backend (OpenAI).
+No data leaves your machine unless you choose a cloud backend (Anthropic or OpenAI).
 
 ---
 
@@ -23,7 +23,8 @@ No data leaves your machine unless you choose a cloud backend (OpenAI).
                                                            │
                                               ┌────────────▼─────────────┐
                                               │  daily_summary           │
-                                              │  Ollama · Claude · OpenAI│
+                                              │  Ollama · Claude         │
+                                              │  Anthropic · OpenAI      │
                                               │  · llm-council           │
                                               └────────────┬─────────────┘
                                                            │
@@ -42,6 +43,7 @@ No data leaves your machine unless you choose a cloud backend (OpenAI).
 - At least one summarizer backend (pick one):
   - **Ollama** (default, fully local) — `ollama pull qwen2.5:7b`
   - **Claude CLI** — `npm install -g @anthropic-ai/claude-code` + auth
+  - **Anthropic** — API key in config or `ANTHROPIC_API_KEY` env var
   - **OpenAI** — API key in config or `OPENAI_API_KEY` env var
   - **llm-council** — [llm-council](https://github.com/Th0mYT/llm-council), needs beefy hardware
 
@@ -86,16 +88,18 @@ git_workspaces = [
 ]
 
 # ── Summarizer backend ────────────────────────────────────────────────────────
-# "ollama" (default) | "claude" | "openai" | "council"
+# "ollama" (default) | "claude" | "anthropic" | "openai" | "council"
 
 summarizer_backend = "ollama"
 ollama_url         = "http://localhost:11434"
 ollama_model       = "qwen2.5:7b"
 
-# claude_model     = ""                        # leave empty for default model
-# openai_api_key   = "sk-…"                   # or set OPENAI_API_KEY in env
-# openai_model     = "gpt-4o-mini"
-# council_url      = "http://localhost:8001"
+# claude_model       = ""                      # leave empty for default model
+# anthropic_api_key  = "sk-ant-…"             # or set ANTHROPIC_API_KEY in env
+# anthropic_model    = "claude-haiku-4-5"
+# openai_api_key     = "sk-…"                  # or set OPENAI_API_KEY in env
+# openai_model       = "gpt-4o-mini"
+# council_url        = "http://localhost:8001"
 ```
 
 ---
@@ -209,6 +213,7 @@ Edit `config.py` to add apps to the right category. The poller uses these to tag
 |---|---|---|
 | Ollama | `ollama` | Default. Fully local, no API key needed. |
 | Claude CLI | `claude` | Requires `claude` on PATH. Uses your existing Claude auth. |
+| Anthropic | `anthropic` | Direct Messages API. Requires `anthropic_api_key` in config or `ANTHROPIC_API_KEY` env var. Defaults to `claude-haiku-4-5`. |
 | OpenAI | `openai` | Requires `openai_api_key` in config or `OPENAI_API_KEY` env var. |
 | llm-council | `council` | Multi-model synthesis. Needs a running [llm-council](https://github.com/Th0mYT/llm-council) instance. |
 

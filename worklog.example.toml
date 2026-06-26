@@ -31,3 +31,13 @@ ollama_model = "qwen2.5:7b"
 # llm-council API base URL (used when summarizer_backend = "council")
 # https://github.com/Th0mYT/llm-council
 council_url = "http://localhost:8001"
+
+# Anthropic Messages API (used when summarizer_backend = "anthropic")
+# Key is read from anthropic_api_key here, or the ANTHROPIC_API_KEY env var.
+# anthropic_api_key = "sk-ant-..."
+anthropic_model = "claude-haiku-4-5"
+
+# OpenAI chat completions API (used when summarizer_backend = "openai")
+# Key is read from openai_api_key here, or the OPENAI_API_KEY env var.
+# openai_api_key = "sk-..."
+openai_model = "gpt-4o-mini"

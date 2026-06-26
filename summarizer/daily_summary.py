@@ -6,6 +6,7 @@ Backends (set summarizer_backend in config.toml):
   ollama   — single Ollama model, works on any modern laptop  [default]
   council  — llm-council multi-model, needs beefy hardware
   claude   — Claude CLI (claude --print), uses your existing claude auth
+  anthropic — Anthropic Messages API (requires ANTHROPIC_API_KEY)
   openai   — OpenAI chat completions API (requires OPENAI_API_KEY)
 
 Usage:
@@ -241,6 +242,52 @@ def _call_openai(prompt: str, model: str, api_key: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Backend: Anthropic Messages API  (direct, requires ANTHROPIC_API_KEY)
+# ---------------------------------------------------------------------------
+
+def _call_anthropic(prompt: str, model: str, api_key: str) -> str:
+    if not api_key:
+        raise RuntimeError(
+            'Anthropic API key not set.\n'
+            'Add anthropic_api_key to ~/.worklog/config.toml or set ANTHROPIC_API_KEY in env.'
+        )
+    payload = {
+        'model': model or 'claude-haiku-4-5',
+        'max_tokens': 4096,
+        'messages': [{'role': 'user', 'content': prompt}],
+    }
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        'https://api.anthropic.com/v1/messages',
+        data=body,
+        headers={
+            'Content-Type': 'application/json',
+            'x-api-key': api_key,
+            'anthropic-version': '2023-06-01',
+        },
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read())
+            # content is a list of blocks; take the first text block
+            content = next(
+                (b.get('text', '') for b in data.get('content', []) if b.get('type') == 'text'),
+                '',
+            )
+            if not content:
+                raise RuntimeError('Anthropic returned an empty response')
+            return content.strip()
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode('utf-8', errors='replace')[:400]
+        raise RuntimeError(f'Anthropic HTTP {e.code}\n{body_text}') from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f'Cannot reach Anthropic API: {e}') from e
+    except (KeyError, IndexError, json.JSONDecodeError) as e:
+        raise RuntimeError(f'Unexpected Anthropic response format: {e}') from e
+
+
+# ---------------------------------------------------------------------------
 # Backend: Claude CLI  (claude --print, uses existing claude auth)
 # ---------------------------------------------------------------------------
 
@@ -317,6 +364,8 @@ def summarize(
         print(f'Backend:   llm-council  ({Config.COUNCIL_URL})')
     elif backend == 'claude':
         print(f'Backend:   claude CLI  model={Config.CLAUDE_MODEL or "default"}')
+    elif backend == 'anthropic':
+        print(f'Backend:   anthropic  model={Config.ANTHROPIC_MODEL}')
     elif backend == 'openai':
         print(f'Backend:   openai  model={Config.OPENAI_MODEL}')
     else:
@@ -329,6 +378,8 @@ def summarize(
             summary = _call_council(prompt, Config.COUNCIL_URL)
         elif backend == 'claude':
             summary = _call_claude(prompt, Config.CLAUDE_MODEL)
+        elif backend == 'anthropic':
+            summary = _call_anthropic(prompt, Config.ANTHROPIC_MODEL, Config.ANTHROPIC_API_KEY)
         elif backend == 'openai':
             summary = _call_openai(prompt, Config.OPENAI_MODEL, Config.OPENAI_API_KEY)
         else:
@@ -362,7 +413,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--backend',
-        choices=['ollama', 'council', 'claude', 'openai'],
+        choices=['ollama', 'council', 'claude', 'anthropic', 'openai'],
         default=None,
         help='Override the backend from config',
     )
