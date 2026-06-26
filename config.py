@@ -65,6 +65,7 @@ _cfg = _load_toml()
 
 class Config:
     LOGS_DIR: str           = str(Path(_cfg.get('logs_dir', '~/.worklog/logs')).expanduser())
+    SUMMARIES_DIR: str      = str(Path(_cfg.get('summaries_dir', '~/.worklog/summaries')).expanduser())
     POLL_INTERVAL: int      = int(_cfg.get('poll_interval', 300))
     INACTIVITY_TIMEOUT: int = int(_cfg.get('inactivity_timeout', 300))
     GIT_REPOS: list[str]       = _cfg.get('git_repos', [])

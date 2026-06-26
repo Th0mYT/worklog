@@ -323,6 +323,17 @@ def _call_claude(prompt: str, model: str = '') -> str:
 
 
 # ---------------------------------------------------------------------------
+# Persistence — save the generated summary so it is not lost
+# ---------------------------------------------------------------------------
+
+def _save_summary(target: date, summary: str, out_dir: Path) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f'{target}.md'
+    path.write_text(summary.rstrip() + '\n', encoding='utf-8')
+    return path
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -389,7 +400,12 @@ def summarize(
         return False
 
     elapsed = time.time() - t0
-    print(f'Done in {elapsed:.1f}s\n')
+    print(f'Done in {elapsed:.1f}s')
+    try:
+        saved_path = _save_summary(target, summary, Path(Config.SUMMARIES_DIR))
+        print(f'Saved:     {saved_path}\n')
+    except OSError as e:
+        print(f'WARNING: could not save summary: {e}\n', file=sys.stderr)
     print('─' * 60)
     print(summary)
     print('─' * 60)

@@ -948,6 +948,7 @@ _HTML = """<!DOCTYPE html>
               <option value="ollama">Ollama</option>
               <option value="council">Council (experimental)</option>
               <option value="claude">Claude CLI</option>
+              <option value="anthropic">Anthropic</option>
               <option value="openai">OpenAI</option>
             </select>
           </div>
@@ -1155,10 +1156,25 @@ _HTML = """<!DOCTYPE html>
     const d = new Date(cur + 'T12:00:00');
     d.setDate(d.getDate() + delta);
     setDate(d.toISOString().slice(0, 10));
+    loadSavedSummary(document.getElementById('action-date').value);
   }
 
   function onDateChange() {
     setDate(document.getElementById('action-date').value);
+    loadSavedSummary(document.getElementById('action-date').value);
+  }
+
+  // Show the saved summary for a date, or clear the panel if none exists.
+  async function loadSavedSummary(date) {
+    if (!api) return;
+    try {
+      const r = await api.get_summary(date);
+      if (r && r.exists) {
+        showOutput(r.output, true, 'Summary — saved ' + r.saved_at);
+      } else {
+        showOutput('', true, '');
+      }
+    } catch (e) { /* leave panel as-is on error */ }
   }
 
   // ── repo path list ──────────────────────────────────────────────────────────
@@ -1242,7 +1258,7 @@ _HTML = """<!DOCTYPE html>
     document.getElementById('view-log-detail').style.display = 'none';
     document.getElementById('view-main').style.display      = 'flex';
     setDate(todayStr());
-    showOutput('', true, '');
+    loadSavedSummary(todayStr());
     refresh();
     _refreshTimer = setInterval(refresh, 1000);
   }
@@ -1480,7 +1496,7 @@ _HTML = """<!DOCTYPE html>
     });
   }
 
-  const _BACKEND_NAMES = { ollama: 'Ollama', council: 'Council', claude: 'Claude CLI', openai: 'OpenAI' };
+  const _BACKEND_NAMES = { ollama: 'Ollama', council: 'Council', claude: 'Claude CLI', anthropic: 'Anthropic', openai: 'OpenAI' };
 
   function _setProgressLabel(text) {
     document.getElementById('progress-backend').textContent = text;
@@ -2080,11 +2096,30 @@ class _API:
                 self._summary_proc.communicate()
                 return {"ok": False, "output": "ERROR: summarizer timed out after 5 minutes"}
             rc = self._summary_proc.returncode
+            if rc == 0:
+                # Prefer the clean saved summary over the noisy subprocess log.
+                saved = self.get_summary(date)
+                if saved.get("exists"):
+                    return {"ok": True, "output": saved["output"],
+                            "saved_at": saved["saved_at"]}
             return {"ok": rc == 0, "output": _merge(stdout, stderr)}
         except Exception as exc:
             return {"ok": False, "output": f"ERROR: {exc}"}
         finally:
             self._summary_proc = None
+
+    def get_summary(self, date: str = '') -> dict:
+        """Return the saved summary for a date, if one exists on disk."""
+        d = date or datetime.now().strftime('%Y-%m-%d')
+        path = Path(Config.SUMMARIES_DIR) / f'{d}.md'
+        if not path.exists():
+            return {"ok": True, "exists": False, "output": "", "saved_at": ""}
+        try:
+            text = path.read_text(encoding='utf-8')
+            saved_at = datetime.fromtimestamp(path.stat().st_mtime).strftime('%Y-%m-%d %H:%M')
+            return {"ok": True, "exists": True, "output": text, "saved_at": saved_at}
+        except OSError as exc:
+            return {"ok": False, "exists": False, "output": f"ERROR: {exc}", "saved_at": ""}
 
     def cancel_summary(self) -> dict:
         proc = self._summary_proc

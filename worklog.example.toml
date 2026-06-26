@@ -4,6 +4,10 @@
 # Where daily .jsonl log files are stored (~ is expanded)
 logs_dir = "~/.worklog/logs"
 
+# Where generated daily summaries are saved as {date}.md (~ is expanded).
+# Summaries are written here automatically and reloaded when you revisit a date.
+summaries_dir = "~/.worklog/summaries"
+
 # How often the activity poller captures a snapshot (seconds)
 poll_interval = 300
 
