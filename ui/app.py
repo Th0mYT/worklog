@@ -18,7 +18,7 @@ import webview
 
 _ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_ROOT))
-from config import Config  # noqa: E402
+from config import Config, _normalize_categories  # noqa: E402
 from logger.activity_poller import _system_idle_seconds  # noqa: E402
 
 _CONFIG_PATH = Path.home() / '.worklog' / 'config.toml'
@@ -273,6 +273,28 @@ _HTML = """<!DOCTYPE html>
       transition: border-color .12s, color .12s;
     }
     .repo-add-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* category rows reuse the repo-row look; name field wants the normal font */
+    .cat-name { font-family: inherit !important; }
+
+    /* ── manual add-record form (log detail) ── */
+    .add-record-form {
+      display: flex; align-items: center; gap: 8px;
+      padding: 0 0 12px; margin-bottom: 4px;
+      border-bottom: 1px solid var(--border-lt);
+      flex-shrink: 0;
+    }
+    .add-record-form select.inline { min-width: 140px; }
+    .add-record-form input[type=time] {
+      padding: 6px 9px;
+      border: 1px solid var(--border); border-radius: 8px;
+      font-size: 12px; font-family: inherit;
+      background: var(--surface-alt); color: var(--text); outline: none;
+      -webkit-user-select: text; user-select: text;
+    }
+    .add-record-form input[type=time]:focus {
+      border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring);
+    }
 
     /* ── section title ── */
     .section-title {
@@ -1018,6 +1040,22 @@ _HTML = """<!DOCTYPE html>
         </div>
       </div>
 
+      <!-- ── Categories ── -->
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-shrink:0">
+          <div class="section-title" style="margin-bottom:0">Categories</div>
+          <button class="repo-add-btn" style="width:auto;padding:4px 10px" onclick="resetCategories()">Reset to defaults</button>
+        </div>
+        <div class="field-hint" style="margin-top:0;margin-bottom:8px">
+          Each category maps to the apps that get logged under it. The names here
+          are also the choices when you add a record by hand.
+        </div>
+        <div class="field-group" style="margin-bottom:0">
+          <div id="cat-list" class="repo-list"></div>
+          <button class="repo-add-btn" onclick="addCategoryRow()" style="margin-top:4px">+ Add category</button>
+        </div>
+      </div>
+
       <!-- ── Summarizer ── -->
       <div class="card">
         <div class="section-title">Summarizer</div>
@@ -1080,10 +1118,19 @@ _HTML = """<!DOCTYPE html>
   <div id="view-log-detail" class="view" style="display:none">
     <div class="app-header" style="flex-shrink:0">
       <button class="btn-gray" style="padding:5px 13px;font-size:12px" onclick="backFromDetail()">← Back</button>
-      <span id="detail-date"></span>
-      <span id="detail-count"></span>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span id="detail-date"></span>
+        <span id="detail-count"></span>
+      </div>
+      <button class="btn-green" style="padding:5px 13px;font-size:12px" onclick="toggleAddRecord()">+ Add record</button>
     </div>
     <div class="card card-grow">
+      <div id="add-record-form" class="add-record-form" style="display:none">
+        <select id="add-cat" class="inline"></select>
+        <input type="time" id="add-time">
+        <button class="btn-blue btn-sm" onclick="saveManualRecord()">Add</button>
+        <button class="btn-gray btn-sm" onclick="toggleAddRecord()">Cancel</button>
+      </div>
       <div id="detail-list"></div>
     </div>
   </div><!-- /view-log-detail -->
@@ -1221,6 +1268,50 @@ _HTML = """<!DOCTYPE html>
     })).filter(r => r.path);
   }
 
+  // ── category list ─────────────────────────────────────────────────────────
+
+  function addCategoryRow(name = '', apps = []) {
+    const list = document.getElementById('cat-list');
+    const row  = document.createElement('div');
+    row.className = 'repo-row';
+    const appsVal = Array.isArray(apps) ? apps.join(', ') : (apps || '');
+    row.innerHTML = `
+      <div class="repo-row-top">
+        <input type="text" class="cat-name" placeholder="category name (e.g. coding)">
+        <button class="repo-remove" title="Remove">×</button>
+      </div>
+      <div class="repo-row-meta">
+        <input type="text" class="repo-tags cat-apps" placeholder="apps: Cursor, Terminal, Xcode…">
+      </div>
+    `;
+    row.querySelector('.cat-name').value = name;
+    row.querySelector('.cat-apps').value = appsVal;
+    row.querySelector('.repo-remove').onclick = () => row.remove();
+    list.appendChild(row);
+    return row;
+  }
+
+  function getCategories() {
+    const out = {};
+    document.querySelectorAll('#cat-list .repo-row').forEach(row => {
+      const name = (row.querySelector('.cat-name')?.value || '').trim();
+      if (!name) return;
+      out[name] = (row.querySelector('.cat-apps')?.value || '')
+                    .split(',').map(a => a.trim()).filter(Boolean);
+    });
+    return out;
+  }
+
+  async function resetCategories() {
+    try {
+      const r = await api.default_categories();
+      const cats = r.categories || {};
+      document.getElementById('cat-list').innerHTML = '';
+      Object.entries(cats).forEach(([name, apps]) => addCategoryRow(name, apps));
+      showToast('Categories reset — Save to keep', 'ok');
+    } catch (e) { showToast('Failed to reset categories', 'error'); }
+  }
+
   // ── view navigation ─────────────────────────────────────────────────────────
 
   async function showSettings(onboarding) {
@@ -1237,6 +1328,10 @@ _HTML = """<!DOCTYPE html>
     const gitPaths = s.git_paths || [];
     gitPaths.forEach(p => addRepoRow(p.path, p.workspace, p.tags));
     if (!gitPaths.length) addRepoRow();
+    document.getElementById('cat-list').innerHTML = '';
+    const cats = s.categories || {};
+    Object.entries(cats).forEach(([name, apps]) => addCategoryRow(name, apps));
+    if (!Object.keys(cats).length) addCategoryRow();
     document.getElementById('s-backend').value       = s.summarizer_backend || 'ollama';
     document.getElementById('s-ollama-url').value    = s.ollama_url || '';
     document.getElementById('s-ollama-model').value  = s.ollama_model || '';
@@ -1282,6 +1377,7 @@ _HTML = """<!DOCTYPE html>
           inactivity_timeout:   parseInt(document.getElementById('s-inactivity').value) || 300,
           git_author:         document.getElementById('s-git-author').value.trim(),
           git_paths:          getPaths(),
+          categories:         getCategories(),
           summarizer_backend: document.getElementById('s-backend').value,
           ollama_url:         document.getElementById('s-ollama-url').value.trim(),
           ollama_model:       document.getElementById('s-ollama-model').value.trim(),
@@ -1607,7 +1703,7 @@ _HTML = """<!DOCTYPE html>
       );
     }
     const cls  = TYPE_PILL[e.type] || 'pill-other';
-    const app  = e.app || '';
+    const app  = e.app || (e.manual ? 'Manual entry' : '');
     const win  = e.tab_title || e.window || '';
     const url  = e.url || '';
     return (
@@ -1615,7 +1711,7 @@ _HTML = """<!DOCTYPE html>
         `<span class="detail-time">${time}</span>` +
         `<span class="type-pill ${cls}" style="flex-shrink:0">${e.type||'other'}</span>` +
         '<span class="detail-text">' +
-          `<div>${app}</div>` +
+          `<div>${_esc(app)}</div>` +
           (win ? `<div class="detail-sub">${win}</div>` : '') +
           (url ? `<div class="detail-sub" style="-webkit-user-select:text;user-select:text">${url}</div>` : '') +
         '</span>' +
@@ -1631,9 +1727,50 @@ _HTML = """<!DOCTYPE html>
     showToast('Entry deleted');
   }
 
+  // ── manual add record ────────────────────────────────────────────────────────
+
+  let _detailDate = '';
+
+  function hideAddRecord() {
+    document.getElementById('add-record-form').style.display = 'none';
+  }
+
+  async function toggleAddRecord() {
+    const form = document.getElementById('add-record-form');
+    if (form.style.display !== 'none') { hideAddRecord(); return; }
+    // Populate the category dropdown from the configured (closed) list
+    const sel = document.getElementById('add-cat');
+    try {
+      const r = await api.get_categories();
+      sel.innerHTML = (r.categories || [])
+        .map(c => `<option value="${_esc(c)}">${_esc(c)}</option>`).join('');
+    } catch (e) { showToast('Failed to load categories', 'error'); return; }
+    // Default the time to now (or noon for a past day)
+    const now = new Date();
+    document.getElementById('add-time').value =
+      (_detailDate === todayStr())
+        ? String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0')
+        : '12:00';
+    form.style.display = 'flex';
+  }
+
+  async function saveManualRecord() {
+    const type = document.getElementById('add-cat').value;
+    const time = document.getElementById('add-time').value;
+    if (!type)  { showToast('Pick a category', 'error'); return; }
+    if (!time)  { showToast('Pick a time', 'error'); return; }
+    const r = await api.add_entry(_detailDate, time, type);
+    if (!r || !r.ok) { showToast((r && r.error) || 'Failed to add record', 'error'); return; }
+    hideAddRecord();
+    await showLogDetail(_detailDate);
+    showToast('Record added', 'ok');
+  }
+
   async function showLogDetail(date) {
     clearInterval(_refreshTimer);
     _refreshTimer = null;
+    _detailDate = date;
+    hideAddRecord();
     setDate(date);
     const data = await api.log_entries(date);
     document.getElementById('detail-date').textContent = date;
@@ -1717,8 +1854,8 @@ def _build_toml(d: dict) -> str:
         f'openai_model = {_toml_str(d["openai_model"])}',
     ]
 
-    # [git_tags] must come AFTER all plain key=value lines — TOML tables
-    # absorb every subsequent key until the next header.
+    # [git_tags] and [categories] must come AFTER all plain key=value lines —
+    # TOML tables absorb every subsequent key until the next header.
     git_tags = d.get('git_tags') or {}
     if git_tags:
         lines.append('')
@@ -1726,6 +1863,14 @@ def _build_toml(d: dict) -> str:
         for path, tags in git_tags.items():
             tags_str = '[' + ', '.join(_toml_str(t) for t in tags) + ']'
             lines.append(f'{_toml_str(path)} = {tags_str}')
+
+    categories = d.get('categories') or {}
+    if categories:
+        lines.append('')
+        lines.append('[categories]')
+        for name, apps in categories.items():
+            apps_str = '[' + ', '.join(_toml_str(a) for a in apps) + ']'
+            lines.append(f'{_toml_str(name)} = {apps_str}')
 
     return '\n'.join(lines) + '\n'
 
@@ -1800,6 +1945,7 @@ class _API:
             'inactivity_timeout':   Config.INACTIVITY_TIMEOUT,
             'git_author':           Config.GIT_AUTHOR,
             'git_paths':          paths,
+            'categories':         {k: list(v) for k, v in Config.CATEGORIES.items()},
             'summarizer_backend': Config.SUMMARIZER_BACKEND,
             'ollama_url':         Config.OLLAMA_URL,
             'ollama_model':       Config.OLLAMA_MODEL,
@@ -1816,7 +1962,9 @@ class _API:
         workspaces = [p['path'] for p in raw_paths if p.get('workspace')]
         git_tags   = {p['path']: p['tags'] for p in raw_paths
                       if p.get('tags') and isinstance(p['tags'], list)}
+        categories = _normalize_categories(data.get('categories'))
         payload = {
+            'categories':           categories,
             'logs_dir':             data.get('logs_dir', '~/.worklog/logs'),
             'poll_interval':        int(data.get('poll_interval', 300)),
             'inactivity_timeout':   int(data.get('inactivity_timeout', 300)),
@@ -1835,6 +1983,7 @@ class _API:
         _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         _CONFIG_PATH.write_text(_build_toml(payload))
 
+        Config.CATEGORIES           = categories
         Config.LOGS_DIR             = str(Path(payload['logs_dir']).expanduser())
         Config.POLL_INTERVAL        = payload['poll_interval']
         Config.INACTIVITY_TIMEOUT   = payload['inactivity_timeout']
@@ -2034,6 +2183,47 @@ class _API:
             return {"ok": removed}
         except OSError as exc:
             return {"ok": False, "error": str(exc)}
+
+    def get_categories(self) -> dict:
+        """Category names available for a manual record (always includes 'other')."""
+        names = list(Config.CATEGORIES.keys())
+        if 'other' not in names:
+            names.append('other')
+        return {"categories": names}
+
+    def default_categories(self) -> dict:
+        """The built-in category → apps mapping, for the Settings reset button."""
+        from config import DEFAULT_CATEGORIES
+        return {"categories": {k: list(v) for k, v in DEFAULT_CATEGORIES.items()}}
+
+    def add_entry(self, date: str, time: str, type: str) -> dict:
+        """Append a manually-created record to a day's log.
+
+        `date` is YYYY-MM-DD, `time` is HH:MM, `type` is a category name chosen
+        from the configured list (never free text). Entries are flagged
+        `manual` so the UI and summarizer can tell them apart.
+        """
+        cat = str(type or '').strip()
+        if not cat:
+            return {"ok": False, "error": "category required"}
+        try:
+            ts = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
+        except (ValueError, TypeError):
+            return {"ok": False, "error": "invalid date/time"}
+
+        entry = {
+            'ts': ts.isoformat(timespec='seconds'),
+            'type': cat,
+            'manual': True,
+        }
+        log_dir = Path(Config.LOGS_DIR)
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            with (log_dir / f"{date}.jsonl").open('a') as f:
+                f.write(json.dumps(entry) + '\n')
+        except OSError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "ts": entry['ts']}
 
     def reset_today(self) -> dict:
         f = Path(Config.LOGS_DIR) / f"{datetime.now().strftime('%Y-%m-%d')}.jsonl"

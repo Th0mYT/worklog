@@ -27,7 +27,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from config import CATEGORIES, MEETING_WINDOW_SIGNALS, Config
+from config import MEETING_WINDOW_SIGNALS, Config
 from logger.browser_reader import get_tab_info
 
 # ---------------------------------------------------------------------------
@@ -125,7 +125,7 @@ def get_active_window() -> tuple[str, str]:
 
 def _classify(app: str, window: str) -> str:
     app_lower = app.lower()
-    for category, apps in CATEGORIES.items():
+    for category, apps in Config.CATEGORIES.items():
         if any(app_lower == a.lower() for a in apps):
             if category == 'meeting':
                 return _resolve_meeting(app, window)

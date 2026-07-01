@@ -45,3 +45,15 @@ anthropic_model = "claude-haiku-4-5"
 # Key is read from openai_api_key here, or the OPENAI_API_KEY env var.
 # openai_api_key = "sk-..."
 openai_model = "gpt-4o-mini"
+
+# App categories — each key is a category name, each value the apps logged
+# under it (first match wins, case-insensitive). Editable from Settings ›
+# Categories in the app; these names are also the choices when adding a record
+# by hand. Omit this table to use the built-in defaults.
+# [categories]
+# coding        = ["Cursor", "Visual Studio Code", "PyCharm", "Terminal"]
+# meeting       = ["Zoom", "Microsoft Teams", "FaceTime", "Discord"]
+# browser       = ["Google Chrome", "Safari", "Firefox", "Arc"]
+# design        = ["Figma", "Sketch"]
+# productivity  = ["Notion", "Obsidian", "Notes"]
+# communication = ["Slack", "Mail", "Telegram"]

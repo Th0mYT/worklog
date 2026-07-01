@@ -16,8 +16,12 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # App categories — add your own apps under the right category.
 # An app can appear in only one category; first match wins.
+#
+# These are the built-in defaults. Users can override them from the Settings UI
+# (persisted to the [categories] table in ~/.worklog/config.toml) — see
+# Config.CATEGORIES below, which is what the poller actually reads at runtime.
 # ---------------------------------------------------------------------------
-CATEGORIES: dict[str, list[str]] = {
+DEFAULT_CATEGORIES: dict[str, list[str]] = {
     'coding': [
         'Cursor', 'Visual Studio Code', 'WebStorm', 'PyCharm', 'IntelliJ IDEA',
         'Xcode', 'Terminal', 'iTerm2', 'Warp', 'Ghostty', 'Vim', 'Neovim',
@@ -60,10 +64,29 @@ def _load_toml() -> dict:
     return {}
 
 
+def _normalize_categories(raw) -> dict[str, list[str]]:
+    """Coerce a user-supplied [categories] table into {name: [apps]}.
+
+    Drops blank names/apps and non-list values so a malformed config can never
+    break classification. Falls back to the built-in defaults when empty.
+    """
+    if not isinstance(raw, dict):
+        return {k: list(v) for k, v in DEFAULT_CATEGORIES.items()}
+    result: dict[str, list[str]] = {}
+    for name, apps in raw.items():
+        name = str(name).strip()
+        if not name or not isinstance(apps, list):
+            continue
+        cleaned = [str(a).strip() for a in apps if str(a).strip()]
+        result[name] = cleaned
+    return result or {k: list(v) for k, v in DEFAULT_CATEGORIES.items()}
+
+
 _cfg = _load_toml()
 
 
 class Config:
+    CATEGORIES: dict[str, list[str]] = _normalize_categories(_cfg.get('categories'))
     LOGS_DIR: str           = str(Path(_cfg.get('logs_dir', '~/.worklog/logs')).expanduser())
     SUMMARIES_DIR: str      = str(Path(_cfg.get('summaries_dir', '~/.worklog/summaries')).expanduser())
     POLL_INTERVAL: int      = int(_cfg.get('poll_interval', 300))
