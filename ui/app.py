@@ -2350,6 +2350,13 @@ def main() -> None:
     # returning a dict raises unhashable type: 'dict')
     window.events.closed += lambda: api._stop_process()
     webview.start()
+    # webview.start() has returned → the GUI is gone and the user closed the
+    # window (traffic-light button or ⌘Q). Hard-exit instead of returning into
+    # CPython finalization: Py_FinalizeEx runs threading._shutdown(), which
+    # blocks forever joining pywebview's non-daemon HTTP/js-api server thread.
+    # This mirrors the Quit button's os._exit(0) path.
+    api._stop_process()
+    os._exit(0)
 
 
 if __name__ == "__main__":

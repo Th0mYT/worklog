@@ -68,8 +68,14 @@ def _format_entries(entries: list[dict]) -> str:
         else:
             activity_type = e.get('type', 'other')
             app = e.get('app', '')
-            window = e.get('tab_title') or e.get('window') or ''
-            label = f"{app} — {window}" if window else app
+            if activity_type == 'browser':
+                # Tab/site detail is deliberately withheld from the prompt so the
+                # summary can never leak exactly what was browsed (e.g. "Google
+                # (Twitch)") — only the fact that a browsing session happened.
+                label = app
+            else:
+                window = e.get('tab_title') or e.get('window') or ''
+                label = f"{app} — {window}" if window else app
             lines.append(f"{ts}  [{activity_type}]  {label}{suffix}")
     return '\n'.join(lines)
 
@@ -108,7 +114,7 @@ Activity-type labels (position 2, in brackets) — these classify the app, they 
   [git/repo]       committed change — has timestamp, message, line stats
   [coding]         active coding session snapshot (every ~5 min)
   [meeting]        active call / video meeting snapshot
-  [browser]        browser tab — title and URL when available
+  [browser]        browsing session — no tab/site title is included (kept generic on purpose)
   [design]         design tool (Figma, Sketch…)
   [communication]  chat app (Slack, Mail…) — not a live call
   [other]          unclassified app
@@ -125,7 +131,9 @@ Produce a concise timesheet for this day. Rules:
 2. Estimate each session duration from the first and last timestamp in the group.
 3. Coding sessions: describe the work using commit messages, not raw text.
 4. Meeting sessions: name the meeting from the window title if visible.
-5. Browser sessions: group by topic (e.g. "research on X", "PR review").
+5. Browser sessions: report generically as "Browser session" (or similar). No tab/site
+   detail is present in the log — never guess, infer, or invent what site or topic it
+   was, and never fabricate detail for any other session type either.
 6. Skip sessions under 5 min unless they contain a git commit.
 7. Output ONE LINE PER SESSION in this exact format:
    Description (Xh) [repo or tool reference if relevant]
