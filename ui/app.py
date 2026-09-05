@@ -279,12 +279,13 @@ _HTML = """<!DOCTYPE html>
 
     /* ── manual add-record form (log detail) ── */
     .add-record-form {
-      display: flex; align-items: center; gap: 8px;
+      display: flex; flex-direction: column; gap: 8px;
       padding: 0 0 12px; margin-bottom: 4px;
       border-bottom: 1px solid var(--border-lt);
       flex-shrink: 0;
     }
-    .add-record-form select.inline { min-width: 140px; }
+    .add-record-row { display: flex; align-items: center; gap: 8px; }
+    .add-record-form select.inline { min-width: 120px; }
     .add-record-form input[type=time] {
       padding: 6px 9px;
       border: 1px solid var(--border); border-radius: 8px;
@@ -293,6 +294,18 @@ _HTML = """<!DOCTYPE html>
       -webkit-user-select: text; user-select: text;
     }
     .add-record-form input[type=time]:focus {
+      border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring);
+    }
+    .add-time-sep { color: var(--text-ter); font-size: 12px; }
+    .add-note-input {
+      width: 100%; box-sizing: border-box;
+      padding: 6px 9px;
+      border: 1px solid var(--border); border-radius: 8px;
+      font-size: 12px; font-family: inherit;
+      background: var(--surface-alt); color: var(--text); outline: none;
+      -webkit-user-select: text; user-select: text;
+    }
+    .add-note-input:focus {
       border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring);
     }
 
@@ -1126,10 +1139,18 @@ _HTML = """<!DOCTYPE html>
     </div>
     <div class="card card-grow">
       <div id="add-record-form" class="add-record-form" style="display:none">
-        <select id="add-cat" class="inline"></select>
-        <input type="time" id="add-time">
-        <button class="btn-blue btn-sm" onclick="saveManualRecord()">Add</button>
-        <button class="btn-gray btn-sm" onclick="toggleAddRecord()">Cancel</button>
+        <div class="add-record-row">
+          <select id="add-cat" class="inline"></select>
+          <input type="time" id="add-time" title="Start time">
+          <span class="add-time-sep">–</span>
+          <input type="time" id="add-end-time" title="End time (optional — leave empty for a single point-in-time record)">
+        </div>
+        <input type="text" id="add-note" class="add-note-input" maxlength="500"
+               placeholder="What did you do? (optional — e.g. &quot;Worked on the API redesign&quot;)">
+        <div class="add-record-row">
+          <button class="btn-blue btn-sm" onclick="saveManualRecord()">Add</button>
+          <button class="btn-gray btn-sm" onclick="toggleAddRecord()">Cancel</button>
+        </div>
       </div>
       <div id="detail-list"></div>
     </div>
@@ -1721,18 +1742,22 @@ _HTML = """<!DOCTYPE html>
         '</div>'
       );
     }
-    const cls  = TYPE_PILL[e.type] || 'pill-other';
-    const app  = e.app || (e.manual ? 'Manual entry' : '');
-    const win  = e.tab_title || e.window || '';
-    const url  = e.url || '';
+    const cls      = TYPE_PILL[e.type] || 'pill-other';
+    const app      = e.app || (e.manual ? 'Manual entry' : '');
+    const win      = e.tab_title || e.window || '';
+    const url      = e.url || '';
+    const note     = e.note || '';
+    const endTime  = e.end_ts ? e.end_ts.slice(11, 16) : '';
+    const timeText = endTime ? `${time}–${endTime}` : time;
     return (
       '<div class="detail-entry">' +
-        `<span class="detail-time">${time}</span>` +
+        `<span class="detail-time">${timeText}</span>` +
         `<span class="type-pill ${cls}" style="flex-shrink:0">${e.type||'other'}</span>` +
         '<span class="detail-text">' +
           `<div>${_esc(app)}</div>` +
           (win ? `<div class="detail-sub">${win}</div>` : '') +
           (url ? `<div class="detail-sub" style="-webkit-user-select:text;user-select:text">${url}</div>` : '') +
+          (note ? `<div class="detail-sub">${_esc(note)}</div>` : '') +
         '</span>' +
         _delBtn(e.ts || '', date) +
       '</div>'
@@ -1770,19 +1795,24 @@ _HTML = """<!DOCTYPE html>
       (_detailDate === todayStr())
         ? String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0')
         : '12:00';
+    document.getElementById('add-end-time').value = '';
+    document.getElementById('add-note').value = '';
     form.style.display = 'flex';
   }
 
   async function saveManualRecord() {
     const type = document.getElementById('add-cat').value;
     const time = document.getElementById('add-time').value;
+    const endTime = document.getElementById('add-end-time').value;
+    const note = document.getElementById('add-note').value.trim();
     if (!type)  { showToast('Pick a category', 'error'); return; }
-    if (!time)  { showToast('Pick a time', 'error'); return; }
-    const r = await api.add_entry(_detailDate, time, type);
+    if (!time)  { showToast('Pick a start time', 'error'); return; }
+    if (endTime && endTime <= time) { showToast('End time must be after start time', 'error'); return; }
+    const r = await api.add_entry(_detailDate, time, type, endTime, note);
     if (!r || !r.ok) { showToast((r && r.error) || 'Failed to add record', 'error'); return; }
     hideAddRecord();
     await showLogDetail(_detailDate);
-    showToast('Record added', 'ok');
+    showToast(endTime ? 'Block added' : 'Record added', 'ok');
   }
 
   async function showLogDetail(date) {
@@ -2218,12 +2248,18 @@ class _API:
         from config import DEFAULT_CATEGORIES
         return {"categories": {k: list(v) for k, v in DEFAULT_CATEGORIES.items()}}
 
-    def add_entry(self, date: str, time: str, type: str) -> dict:
+    def add_entry(self, date: str, time: str, type: str, end_time: str = '', note: str = '') -> dict:
         """Append a manually-created record to a day's log.
 
         `date` is YYYY-MM-DD, `time` is HH:MM, `type` is a category name chosen
         from the configured list (never free text). Entries are flagged
         `manual` so the UI and summarizer can tell them apart.
+
+        `end_time` (optional, HH:MM) turns this into a time-range block —
+        useful to backfill a gap where the poller wasn't running. `note`
+        (optional free text) describes what was done; it is passed through
+        verbatim into the summarizer prompt instead of the usual app/window
+        label.
         """
         cat = str(type or '').strip()
         if not cat:
@@ -2238,6 +2274,20 @@ class _API:
             'type': cat,
             'manual': True,
         }
+
+        if end_time:
+            try:
+                end_ts = datetime.strptime(f"{date} {end_time}", "%Y-%m-%d %H:%M")
+            except (ValueError, TypeError):
+                return {"ok": False, "error": "invalid end time"}
+            if end_ts <= ts:
+                return {"ok": False, "error": "end time must be after start time"}
+            entry['end_ts'] = end_ts.isoformat(timespec='seconds')
+
+        note = str(note or '').strip()
+        if note:
+            entry['note'] = note
+
         log_dir = Path(Config.LOGS_DIR)
         try:
             log_dir.mkdir(parents=True, exist_ok=True)

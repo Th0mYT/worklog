@@ -65,18 +65,28 @@ def _format_entries(entries: list[dict]) -> str:
         if e.get('source') == 'git':
             stats = f"+{e.get('insertions', 0)}/-{e.get('deletions', 0)} in {e.get('files_changed', 0)} file(s)"
             lines.append(f"{ts}  [git/{e.get('repo', '?')}]  {e.get('message', '')}  ({stats}){suffix}")
+            continue
+
+        activity_type = e.get('type', 'other')
+        note = (e.get('note') or '').strip()
+        end_ts = e.get('end_ts', '')
+        if end_ts:
+            # Manual, user-reported block — the user already gave an exact
+            # start/end, so show it as a range instead of a single timestamp.
+            ts = f"{ts}–{end_ts[11:16]}"
+
+        if note:
+            label = note
+        elif activity_type == 'browser':
+            # Tab/site detail is deliberately withheld from the prompt so the
+            # summary can never leak exactly what was browsed (e.g. "Google
+            # (Twitch)") — only the fact that a browsing session happened.
+            label = e.get('app', '')
         else:
-            activity_type = e.get('type', 'other')
             app = e.get('app', '')
-            if activity_type == 'browser':
-                # Tab/site detail is deliberately withheld from the prompt so the
-                # summary can never leak exactly what was browsed (e.g. "Google
-                # (Twitch)") — only the fact that a browsing session happened.
-                label = app
-            else:
-                window = e.get('tab_title') or e.get('window') or ''
-                label = f"{app} — {window}" if window else app
-            lines.append(f"{ts}  [{activity_type}]  {label}{suffix}")
+            window = e.get('tab_title') or e.get('window') or ''
+            label = f"{app} — {window}" if window else app
+        lines.append(f"{ts}  [{activity_type}]  {label}{suffix}")
     return '\n'.join(lines)
 
 
@@ -109,6 +119,12 @@ def build_prompt(target: date, entries: list[dict]) -> str:
 {note_block}
 Log entry format:
   TIMESTAMP  [activity-type]  app/description  (stats if git)  [#project-tags if any]
+
+A line with a TIMESTAMP–TIMESTAMP range instead of a single timestamp is a
+manual, user-reported block (used to backfill a gap when the tracker wasn't
+running) — the user already gave the exact start and end, so use those times
+directly as the session duration instead of estimating it, and use the
+description given as the session's label.
 
 Activity-type labels (position 2, in brackets) — these classify the app, they are NOT tags:
   [git/repo]       committed change — has timestamp, message, line stats
