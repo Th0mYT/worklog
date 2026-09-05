@@ -390,6 +390,7 @@ def summarize(
     else:
         print(f'Backend:   ollama  model={Config.OLLAMA_MODEL}  ({Config.OLLAMA_URL})')
 
+    print(f'Prompt:    {len(prompt):,} chars', flush=True)
     print('Calling LLM…', flush=True)
     t0 = time.time()
     try:

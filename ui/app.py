@@ -1598,6 +1598,8 @@ _HTML = """<!DOCTYPE html>
     document.getElementById('progress-backend').textContent = text;
   }
 
+  let _progressPollTimer = null;
+
   function showProgress(on, backendLabel) {
     const wrap    = document.getElementById('summary-progress');
     const elapsed = document.getElementById('progress-elapsed');
@@ -1614,8 +1616,24 @@ _HTML = """<!DOCTYPE html>
     } else {
       clearInterval(_progressTimer);
       _progressTimer = null;
+      clearInterval(_progressPollTimer);
+      _progressPollTimer = null;
       wrap.classList.remove('visible');
     }
+  }
+
+  // Poll the subprocess's real stdout so the label reflects what is actually
+  // happening (entries loaded, backend/model, prompt size, "Calling LLM…")
+  // instead of a single static guess for the whole run.
+  function _startProgressPolling() {
+    clearInterval(_progressPollTimer);
+    _progressPollTimer = setInterval(async () => {
+      try {
+        const p = await api.get_summary_progress();
+        const lastLine = (p.lines || []).reverse().find(l => l.trim() && !/^─+$/.test(l.trim()));
+        if (lastLine) _setProgressLabel(lastLine.trim());
+      } catch { /* ignore transient polling errors */ }
+    }, 600);
   }
 
   async function runSummary() {
@@ -1630,6 +1648,7 @@ _HTML = """<!DOCTYPE html>
       try {
         await api.enrich(date, false);
         _setProgressLabel('Calling ' + (_BACKEND_NAMES[backend] || 'LLM') + '…');
+        _startProgressPolling();
         const r = await api.summarize(date, backend);
         showOutput(r.output, r.ok, 'Summary — ' + bLabel);
         showToast(r.ok ? 'Summary ready' : 'Summary failed', r.ok ? 'ok' : 'error');
@@ -1922,6 +1941,9 @@ class _API:
         self._cached_idle = 0.0
         self._poller_started_at: float = 0.0
         self._summary_proc: subprocess.Popen | None = None
+        self._summary_lines: list[str] = []
+        self._summary_lock = threading.Lock()
+        self._summary_started_at: float = 0.0
         threading.Thread(target=self._auto_manager, daemon=True).start()
         if _CONFIG_PATH.exists():
             self._start_process()
@@ -2274,17 +2296,24 @@ class _API:
             cmd += ["--date", date]
         if backend:
             cmd += ["--backend", backend]
+        with self._summary_lock:
+            self._summary_lines = []
+            self._summary_started_at = time.time()
         try:
             self._summary_proc = subprocess.Popen(
-                cmd, cwd=str(_ROOT), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding='utf-8', env=self._subprocess_env(),
+                cmd, cwd=str(_ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding='utf-8', bufsize=1, env=self._subprocess_env(),
             )
+            reader = threading.Thread(target=self._read_summary_output, daemon=True)
+            reader.start()
             try:
-                stdout, stderr = self._summary_proc.communicate(timeout=300)
+                self._summary_proc.wait(timeout=300)
             except subprocess.TimeoutExpired:
                 self._summary_proc.kill()
-                self._summary_proc.communicate()
+                self._summary_proc.wait()
+                reader.join(timeout=5)
                 return {"ok": False, "output": "ERROR: summarizer timed out after 5 minutes"}
+            reader.join(timeout=5)
             rc = self._summary_proc.returncode
             if rc == 0:
                 # Prefer the clean saved summary over the noisy subprocess log.
@@ -2292,11 +2321,29 @@ class _API:
                 if saved.get("exists"):
                     return {"ok": True, "output": saved["output"],
                             "saved_at": saved["saved_at"]}
-            return {"ok": rc == 0, "output": _merge(stdout, stderr)}
+            with self._summary_lock:
+                output = '\n'.join(self._summary_lines)
+            return {"ok": rc == 0, "output": output}
         except Exception as exc:
             return {"ok": False, "output": f"ERROR: {exc}"}
         finally:
             self._summary_proc = None
+
+    def _read_summary_output(self) -> None:
+        proc = self._summary_proc
+        if proc is None or proc.stdout is None:
+            return
+        for line in proc.stdout:
+            with self._summary_lock:
+                self._summary_lines.append(line.rstrip('\n'))
+
+    def get_summary_progress(self) -> dict:
+        proc = self._summary_proc
+        running = proc is not None and proc.poll() is None
+        with self._summary_lock:
+            lines = list(self._summary_lines)
+        elapsed = (time.time() - self._summary_started_at) if running else 0.0
+        return {"running": running, "lines": lines[-8:], "elapsed": elapsed}
 
     def get_summary(self, date: str = '') -> dict:
         """Return the saved summary for a date, if one exists on disk."""

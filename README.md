@@ -160,7 +160,7 @@ Redis logging fix — deduplicated connection events (0.5h) [my-api]
 
 ## General
 
-Browser research — documentation and PR reviews (1.0h)
+Browser session (1.0h)
 
 Total: 7.5h
 ```
@@ -216,6 +216,33 @@ Edit `config.py` to add apps to the right category. The poller uses these to tag
 | Anthropic | `anthropic` | Direct Messages API. Requires `anthropic_api_key` in config or `ANTHROPIC_API_KEY` env var. Defaults to `claude-haiku-4-5`. |
 | OpenAI | `openai` | Requires `openai_api_key` in config or `OPENAI_API_KEY` env var. |
 | llm-council | `council` | Multi-model synthesis. Needs a running [llm-council](https://github.com/Th0mYT/llm-council) instance. |
+
+---
+
+## Building the app
+
+`build_dmg.sh` packages worklog into a standalone `worklog.app` (via `py2app`) and wraps it in a distributable DMG. Run it from the project root with the venv from [Installation](#installation) already set up:
+
+```bash
+bash build_dmg.sh
+```
+
+This script:
+
+1. Installs build-only dependencies (`py2app`, `pyobjc*`) into the venv.
+2. Cleans any previous `build/`/`dist/` output.
+3. Regenerates the app icon (`make_icon.py` → `assets/worklog.icns`).
+4. Runs `setup.py py2app` to produce `dist/worklog.app`.
+5. Bundles any native `.dylib`s py2app misses so the app runs standalone.
+6. Packs `dist/worklog.app` into `dist/worklog-<version>.dmg`.
+
+Output: `dist/worklog-<version>.dmg` (version is set by `VERSION` at the top of `build_dmg.sh`).
+
+Notes:
+
+- macOS + Xcode Command Line Tools required (`xcode-select --install`) — py2app and PyObjC need them.
+- To build without the DMG step, run `python setup.py py2app` directly after `make_icon.py`; the result is still `dist/worklog.app`.
+- `PYTHON=/path/to/python bash build_dmg.sh` overrides which interpreter builds the app (defaults to `.venv/bin/python`).
 
 ---
 
