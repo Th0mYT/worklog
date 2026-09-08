@@ -766,6 +766,13 @@ _HTML = """<!DOCTYPE html>
       font-size: 10.5px;
       color: var(--text-ter);
     }
+    .progress-hint {
+      font-size: 10.5px;
+      color: var(--text-ter);
+      font-style: italic;
+      margin-top: 4px;
+      min-height: 13px;
+    }
 
     /* ── structured summary output ── */
     .summary-output {
@@ -968,6 +975,7 @@ _HTML = """<!DOCTYPE html>
               <button class="btn-ghost" style="padding:1px 8px;font-size:11px" onclick="cancelSummary()">Cancel</button>
             </span>
           </div>
+          <div id="progress-hint" class="progress-hint"></div>
         </div>
 
         <div id="summary-output" class="summary-output">
@@ -1614,25 +1622,44 @@ _HTML = """<!DOCTYPE html>
   }
 
   const _BACKEND_NAMES = { ollama: 'Ollama', council: 'Council', claude: 'Claude CLI', anthropic: 'Anthropic', openai: 'OpenAI' };
+  // Backends that go quiet for a long time between "Calling LLM…" and the
+  // final line (nothing else prints in between) get an upfront heads-up so
+  // the stalled-looking wait doesn't read as a hang.
+  const _BACKEND_HINTS = {
+    claude: 'The claude CLI backend boots a full agent session on every call — the first response can take a few minutes with no further updates in between.',
+  };
+  const _STALL_AFTER_S = 15;
 
   function _setProgressLabel(text) {
     document.getElementById('progress-backend').textContent = text;
   }
 
-  let _progressPollTimer = null;
+  let _progressPollTimer  = null;
+  let _progressLastLine   = '';
+  let _progressLastLineAt = 0;
 
   function showProgress(on, backendLabel) {
     const wrap    = document.getElementById('summary-progress');
     const elapsed = document.getElementById('progress-elapsed');
     const bLabel  = document.getElementById('progress-backend');
+    const hint    = document.getElementById('progress-hint');
     if (on) {
-      _progressStart = Date.now();
+      _progressStart      = Date.now();
+      _progressLastLine   = '';
+      _progressLastLineAt = Date.now();
       bLabel.textContent  = 'Calling ' + (_BACKEND_NAMES[backendLabel] || 'LLM') + '…';
       elapsed.textContent = '0s';
+      hint.textContent    = _BACKEND_HINTS[backendLabel] || '';
       wrap.classList.add('visible');
       clearInterval(_progressTimer);
       _progressTimer = setInterval(() => {
         elapsed.textContent = Math.floor((Date.now() - _progressStart) / 1000) + 's';
+        const stalledFor = Math.floor((Date.now() - _progressLastLineAt) / 1000);
+        if (stalledFor >= _STALL_AFTER_S) {
+          hint.textContent = `Still working — no update in ${stalledFor}s. This is expected for slower backends, not a hang.`;
+        } else if (_BACKEND_HINTS[backendLabel]) {
+          hint.textContent = _BACKEND_HINTS[backendLabel];
+        }
       }, 1000);
     } else {
       clearInterval(_progressTimer);
@@ -1640,6 +1667,7 @@ _HTML = """<!DOCTYPE html>
       clearInterval(_progressPollTimer);
       _progressPollTimer = null;
       wrap.classList.remove('visible');
+      hint.textContent = '';
     }
   }
 
@@ -1652,7 +1680,11 @@ _HTML = """<!DOCTYPE html>
       try {
         const p = await api.get_summary_progress();
         const lastLine = (p.lines || []).reverse().find(l => l.trim() && !/^─+$/.test(l.trim()));
-        if (lastLine) _setProgressLabel(lastLine.trim());
+        if (lastLine && lastLine.trim() !== _progressLastLine) {
+          _progressLastLine   = lastLine.trim();
+          _progressLastLineAt = Date.now();
+          _setProgressLabel(_progressLastLine);
+        }
       } catch { /* ignore transient polling errors */ }
     }, 600);
   }
