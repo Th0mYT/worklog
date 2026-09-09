@@ -18,7 +18,7 @@ import webview
 
 _ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_ROOT))
-from config import Config, _normalize_categories  # noqa: E402
+from config import Config, _normalize_categories, _normalize_commesse  # noqa: E402
 from logger.activity_poller import _system_idle_seconds  # noqa: E402
 
 _CONFIG_PATH = Path.home() / '.worklog' / 'config.toml'
@@ -1077,6 +1077,18 @@ _HTML = """<!DOCTYPE html>
         </div>
       </div>
 
+      <!-- ── Commesse ── -->
+      <div class="card">
+        <div class="section-title">Commesse</div>
+        <div class="field-hint" style="margin-top:0;margin-bottom:8px">
+          Cliente e commessa a cui le attività vengono assegnate nel riepilogo giornaliero.
+        </div>
+        <div class="field-group" style="margin-bottom:0">
+          <div id="com-list" class="repo-list"></div>
+          <button class="repo-add-btn" onclick="addCommessaRow()" style="margin-top:4px">+ Add commessa</button>
+        </div>
+      </div>
+
       <!-- ── Summarizer ── -->
       <div class="card">
         <div class="section-title">Summarizer</div>
@@ -1341,6 +1353,46 @@ _HTML = """<!DOCTYPE html>
     } catch (e) { showToast('Failed to reset categories', 'error'); }
   }
 
+  // ── commesse list ────────────────────────────────────────────────────────────
+
+  function addCommessaRow(name = '', client = '', keywords = []) {
+    const list = document.getElementById('com-list');
+    const row  = document.createElement('div');
+    row.className = 'repo-row';
+    const kwVal = Array.isArray(keywords) ? keywords.join(', ') : (keywords || '');
+    row.innerHTML = `
+      <div class="repo-row-top">
+        <input type="text" class="cat-name com-name" placeholder="commessa (e.g. Backend revamp)">
+        <input type="text" class="cat-name com-client" placeholder="cliente">
+        <button class="repo-remove" title="Remove">×</button>
+      </div>
+      <div class="repo-row-meta">
+        <input type="text" class="repo-tags com-keywords" placeholder="keywords: acme, backend-api…">
+      </div>
+    `;
+    row.querySelector('.com-name').value   = name;
+    row.querySelector('.com-client').value = client;
+    row.querySelector('.com-keywords').value = kwVal;
+    row.querySelector('.repo-remove').onclick = () => row.remove();
+    list.appendChild(row);
+    return row;
+  }
+
+  function getCommesse() {
+    const out = [];
+    document.querySelectorAll('#com-list .repo-row').forEach(row => {
+      const name = (row.querySelector('.com-name')?.value || '').trim();
+      if (!name) return;
+      out.push({
+        name,
+        client: (row.querySelector('.com-client')?.value || '').trim(),
+        keywords: (row.querySelector('.com-keywords')?.value || '')
+                    .split(',').map(k => k.trim()).filter(Boolean),
+      });
+    });
+    return out;
+  }
+
   // ── view navigation ─────────────────────────────────────────────────────────
 
   async function showSettings(onboarding) {
@@ -1361,6 +1413,10 @@ _HTML = """<!DOCTYPE html>
     const cats = s.categories || {};
     Object.entries(cats).forEach(([name, apps]) => addCategoryRow(name, apps));
     if (!Object.keys(cats).length) addCategoryRow();
+    document.getElementById('com-list').innerHTML = '';
+    const commesse = s.commesse || [];
+    commesse.forEach(c => addCommessaRow(c.name, c.client, c.keywords));
+    if (!commesse.length) addCommessaRow();
     document.getElementById('s-backend').value       = s.summarizer_backend || 'ollama';
     document.getElementById('s-ollama-url').value    = s.ollama_url || '';
     document.getElementById('s-ollama-model').value  = s.ollama_model || '';
@@ -1407,6 +1463,7 @@ _HTML = """<!DOCTYPE html>
           git_author:         document.getElementById('s-git-author').value.trim(),
           git_paths:          getPaths(),
           categories:         getCategories(),
+          commesse:           getCommesse(),
           summarizer_backend: document.getElementById('s-backend').value,
           ollama_url:         document.getElementById('s-ollama-url').value.trim(),
           ollama_model:       document.getElementById('s-ollama-model').value.trim(),
@@ -1953,6 +2010,17 @@ def _build_toml(d: dict) -> str:
             apps_str = '[' + ', '.join(_toml_str(a) for a in apps) + ']'
             lines.append(f'{_toml_str(name)} = {apps_str}')
 
+    # [[commesse]] is an array-of-tables — each entry is its own header, and
+    # (like [git_tags]/[categories]) it must come after all plain key=value lines.
+    commesse = d.get('commesse') or []
+    for c in commesse:
+        lines.append('')
+        lines.append('[[commesse]]')
+        lines.append(f'name = {_toml_str(c["name"])}')
+        lines.append(f'client = {_toml_str(c.get("client", ""))}')
+        kw_str = '[' + ', '.join(_toml_str(k) for k in (c.get('keywords') or [])) + ']'
+        lines.append(f'keywords = {kw_str}')
+
     return '\n'.join(lines) + '\n'
 
 
@@ -2030,6 +2098,7 @@ class _API:
             'git_author':           Config.GIT_AUTHOR,
             'git_paths':          paths,
             'categories':         {k: list(v) for k, v in Config.CATEGORIES.items()},
+            'commesse':           [dict(c) for c in Config.COMMESSE],
             'summarizer_backend': Config.SUMMARIZER_BACKEND,
             'ollama_url':         Config.OLLAMA_URL,
             'ollama_model':       Config.OLLAMA_MODEL,
@@ -2047,8 +2116,10 @@ class _API:
         git_tags   = {p['path']: p['tags'] for p in raw_paths
                       if p.get('tags') and isinstance(p['tags'], list)}
         categories = _normalize_categories(data.get('categories'))
+        commesse   = _normalize_commesse(data.get('commesse'))
         payload = {
             'categories':           categories,
+            'commesse':             commesse,
             'logs_dir':             data.get('logs_dir', '~/.worklog/logs'),
             'poll_interval':        int(data.get('poll_interval', 300)),
             'inactivity_timeout':   int(data.get('inactivity_timeout', 300)),
@@ -2068,6 +2139,7 @@ class _API:
         _CONFIG_PATH.write_text(_build_toml(payload))
 
         Config.CATEGORIES           = categories
+        Config.COMMESSE             = commesse
         Config.LOGS_DIR             = str(Path(payload['logs_dir']).expanduser())
         Config.POLL_INTERVAL        = payload['poll_interval']
         Config.INACTIVITY_TIMEOUT   = payload['inactivity_timeout']

@@ -57,3 +57,17 @@ openai_model = "gpt-4o-mini"
 # design        = ["Figma", "Sketch"]
 # productivity  = ["Notion", "Obsidian", "Notes"]
 # communication = ["Slack", "Mail", "Telegram"]
+
+# Client work orders (commesse) — each is matched by the daily summarizer's LLM
+# against the day's activity (app/window titles, git repos, tags) and used to
+# group sessions in the summary. Editable from Settings › Commesse in the app.
+# Omit this table if you don't track work by client/commessa.
+# [[commesse]]
+# name     = "Backend revamp"
+# client   = "Acme Corp"
+# keywords = ["acme", "backend-api"]
+#
+# [[commesse]]
+# name     = "Redesign sito"
+# client   = "Beta srl"
+# keywords = ["beta", "figma"]

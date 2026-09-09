@@ -85,6 +85,30 @@ def _normalize_categories(raw) -> dict[str, list[str]]:
     return result or {k: list(v) for k, v in DEFAULT_CATEGORIES.items()}
 
 
+def _normalize_commesse(raw) -> list[dict]:
+    """Coerce a user-supplied [[commesse]] array into [{name, client, keywords}].
+
+    Drops entries without a name and duplicate names. Unlike categories, an
+    empty result is valid — "no commesse configured" is a normal state.
+    """
+    if not isinstance(raw, list):
+        return []
+    result: list[dict] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get('name', '')).strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        client = str(item.get('client', '')).strip()
+        keywords = item.get('keywords')
+        keywords = [str(k).strip() for k in keywords if str(k).strip()] if isinstance(keywords, list) else []
+        result.append({'name': name, 'client': client, 'keywords': keywords})
+    return result
+
+
 _cfg = _load_toml()
 
 
@@ -98,6 +122,7 @@ class Config:
     GIT_WORKSPACES: list[str]  = _cfg.get('git_workspaces', [])
     GIT_REPO_TAGS: dict[str, list[str]] = _cfg.get('git_tags', {})
     GIT_AUTHOR: str            = _cfg.get('git_author', '')
+    COMMESSE: list[dict]       = _normalize_commesse(_cfg.get('commesse', []))
 
     # Summarizer
     SUMMARIZER_BACKEND: str = _cfg.get('summarizer_backend', 'ollama')

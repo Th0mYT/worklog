@@ -90,6 +90,15 @@ def _format_entries(entries: list[dict]) -> str:
     return '\n'.join(lines)
 
 
+def _commesse_block() -> str:
+    lines = []
+    for c in Config.COMMESSE:
+        client = f" — client: {c['client']}" if c.get('client') else ''
+        kw = f" (keywords: {', '.join(c['keywords'])})" if c.get('keywords') else ''
+        lines.append(f"  - {c['name']}{client}{kw}")
+    return '\n'.join(lines) + '\n'
+
+
 def build_prompt(target: date, entries: list[dict]) -> str:
     has_activity = any(e.get('source') != 'git' for e in entries)
     has_git      = any(e.get('source') == 'git' for e in entries)
@@ -102,18 +111,40 @@ def build_prompt(target: date, entries: list[dict]) -> str:
         notes.append('Note: no git commits found — git enricher was not run.')
     note_block = ('\n' + '\n'.join(notes) + '\n') if notes else ''
 
-    tag_rules = (
-        '8. Some entries end with project tags like [#ddh, #backend]. These are USER-DEFINED\n'
-        '   PROJECT TAGS — completely different from the activity-type labels like [coding] or\n'
-        '   [other] that appear in position 2 of each line. Do NOT treat activity types as tags.\n'
-        '   Group sessions by their project tag under a "## #tag-name" header.\n'
-        '   Untagged sessions go under "## General" (omit "## General" if all sessions are tagged).\n'
-        '9. End with a blank line then:\n'
-        '   Total: Xh'
-    ) if has_tags else (
-        '8. End with a blank line then:\n'
-        '   Total: Xh'
-    )
+    if Config.COMMESSE:
+        tag_rules = (
+            '8. Only put a session under a commessa header when there is clear, concrete\n'
+            '   evidence — its git repo/#tag, or an explicit mention of the commessa\'s name,\n'
+            '   client, or keyword in a commit message or window title. Do not guess from\n'
+            '   vague thematic similarity:\n'
+            f'{_commesse_block()}'
+            '   Everything else — every browser session, every chat/meeting session, and any\n'
+            '   coding with no repo/keyword match — is unassigned. Build and merge unassigned\n'
+            '   sessions exactly as you would with no commesse at all: combine interleaved\n'
+            '   short activity switches (e.g. coding + browser + chat across an afternoon)\n'
+            '   into ONE descriptive session per rule 1 — never split them into one line per\n'
+            '   5-minute snapshot just because they didn\'t match a commessa.\n'
+            '   Put every matched session under its own "## <commessa name>" header (reuse\n'
+            '   the same header for all of that commessa\'s sessions) and every unassigned\n'
+            '   session under a single "## Non assegnata" header.\n'
+            '9. End with a blank line then:\n'
+            '   Total: Xh'
+        )
+    elif has_tags:
+        tag_rules = (
+            '8. Some entries end with project tags like [#ddh, #backend]. These are USER-DEFINED\n'
+            '   PROJECT TAGS — completely different from the activity-type labels like [coding] or\n'
+            '   [other] that appear in position 2 of each line. Do NOT treat activity types as tags.\n'
+            '   Group sessions by their project tag under a "## #tag-name" header.\n'
+            '   Untagged sessions go under "## General" (omit "## General" if all sessions are tagged).\n'
+            '9. End with a blank line then:\n'
+            '   Total: Xh'
+        )
+    else:
+        tag_rules = (
+            '8. End with a blank line then:\n'
+            '   Total: Xh'
+        )
 
     return f"""You are analyzing a PC activity log to produce a timesheet summary for {target}.
 {note_block}
