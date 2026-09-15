@@ -1,44 +1,97 @@
 # worklog
 
-Offline PC activity tracker with AI-powered daily summaries.
+**Offline-first macOS activity tracker with AI-powered daily summaries.**
 
-worklog runs quietly in the background, capturing what app and window is active every few minutes and enriching it with git commit history from your repos. At the end of the day, an LLM turns that raw log into a clean timesheet you can paste straight into your tracker.
+worklog runs quietly in the background, capturing what app and window is active every few
+minutes and enriching that log with git commit history from your repos. At the end of the
+day, an LLM turns the raw log into a clean, client-ready timesheet you can paste straight
+into your time-tracking tool.
 
-No data leaves your machine unless you choose a cloud backend (Anthropic or OpenAI).
+No data leaves your machine unless you choose a cloud backend (Anthropic, OpenAI, or a
+remote llm-council instance).
+
+---
+
+## Table of contents
+
+- [Features](#features)
+- [How it works](#how-it-works)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Usage](#usage)
+  - [UI](#ui-recommended)
+  - [CLI](#cli)
+- [Log format](#log-format)
+- [App categories](#app-categories)
+- [Client work orders (commesse)](#client-work-orders-commesse)
+- [Summarizer backends](#summarizer-backends)
+- [macOS permissions](#macos-permissions)
+- [Building the app](#building-the-app)
+- [License](#license)
+
+---
+
+## Features
+
+- **Passive activity capture** — polls the frontmost app/window on a configurable interval,
+  plus the active browser tab title and URL for supported browsers.
+- **Git enrichment** — pulls the day's commits (by author, across explicit repos or whole
+  workspace folders) into the same log, tagged per project.
+- **Manual time blocks** — backfill a gap the poller missed, or log time by hand as a point
+  event or a start/end range, with an optional free-text note passed straight into the
+  summarizer prompt.
+- **AI daily summaries** — five interchangeable backends (Ollama, Claude CLI, Anthropic,
+  OpenAI, llm-council), with live progress feedback and a cancel button.
+- **Client work orders (commesse)** — group a day's sessions by client/project based on
+  git repo, tag, or keyword matches, entirely configurable from the UI.
+- **Configurable categories** — classify apps into `coding`, `meeting`, `browser`, `design`,
+  `productivity`, `communication`, or your own custom set.
+- **Native macOS UI** — start/stop the poller, enrich, summarize, browse and edit any day's
+  log, and manage settings, all from a lightweight `pywebview` window. Summaries are saved
+  to disk and reloaded automatically when you revisit a date.
+- **Fully offline by default** — the default backend (Ollama) and all activity capture run
+  locally; nothing is sent anywhere unless you opt into a cloud backend.
 
 ---
 
 ## How it works
 
 ```
-┌─────────────────────┐     every 5 min      ┌──────────────────────────┐
+┌─────────────────────┐     every N sec      ┌──────────────────────────┐
 │  activity_poller    │ ──────────────────▶  │  ~/.worklog/logs/        │
 │  (via UI or CLI)    │                       │  YYYY-MM-DD.jsonl        │
 └─────────────────────┘                       │                          │
-                                              │  { ts, app, window,     │
+                                               │  { ts, app, window,     │
 ┌─────────────────────┐     on demand         │    type, url… }          │
 │  git_enricher       │ ──────────────────▶  │  { source: git, repo,   │
 │  (manual / UI)      │                       │    message, stats… }     │
-└─────────────────────┘                       └────────────┬─────────────┘
-                                                           │
-                                              ┌────────────▼─────────────┐
-                                              │  daily_summary           │
-                                              │  Ollama · Claude         │
-                                              │  Anthropic · OpenAI      │
-                                              │  · llm-council           │
-                                              └────────────┬─────────────┘
-                                                           │
-                                              ┌────────────▼─────────────┐
-                                              │  Timesheet-ready output  │
-                                              │  one line per session    │
-                                              └──────────────────────────┘
+└─────────────────────┘                       │                          │
+                                               │  { manual: true,        │
+┌─────────────────────┐     manual entry      │    note, end_ts… }       │
+│  UI "add block"     │ ──────────────────▶  └────────────┬─────────────┘
+└─────────────────────┘                                    │
+                                              ┌─────────────▼─────────────┐
+                                              │  daily_summary            │
+                                              │  Ollama · Claude CLI      │
+                                              │  Anthropic · OpenAI       │
+                                              │  · llm-council            │
+                                              │  (grouped by commessa,    │
+                                              │   if configured)          │
+                                              └─────────────┬─────────────┘
+                                                             │
+                                              ┌─────────────▼─────────────┐
+                                              │  ~/.worklog/summaries/    │
+                                              │  YYYY-MM-DD.md            │
+                                              │  timesheet-ready output   │
+                                              └────────────────────────────┘
 ```
 
 ---
 
 ## Requirements
 
-- macOS (activity poller uses AppleScript)
+- macOS (the activity poller and browser-tab reader use AppleScript / CoreGraphics)
 - Python 3.11+
 - At least one summarizer backend (pick one):
   - **Ollama** (default, fully local) — `ollama pull qwen2.5:7b`
@@ -58,6 +111,8 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
+This installs two console scripts into the venv: `worklog-ui` and `worklog-poll`.
+
 ---
 
 ## Configuration
@@ -69,13 +124,19 @@ mkdir -p ~/.worklog
 cp worklog.example.toml ~/.worklog/config.toml
 ```
 
+Config is resolved in this order: `~/.worklog/config.toml` (user-level) →
+`./worklog.toml` (project-local, gitignored) → built-in defaults. Most of it can also be
+edited from the UI's **Settings** screen, which writes back to
+`~/.worklog/config.toml`.
+
 ```toml
 # ~/.worklog/config.toml
 
-logs_dir          = "~/.worklog/logs"
-poll_interval     = 300          # seconds between snapshots
-inactivity_timeout = 300         # pause poller after this many seconds idle
-git_author        = "yourname"   # substring matched against git author name or email
+logs_dir           = "~/.worklog/logs"       # where daily .jsonl logs are stored
+summaries_dir       = "~/.worklog/summaries" # where generated {date}.md summaries are saved
+poll_interval       = 300          # seconds between snapshots
+inactivity_timeout  = 300          # pause poller after this many seconds idle
+git_author          = "yourname"   # substring matched against git author name or email
 
 # Repos to scan for commits (explicit list)
 git_repos = [
@@ -87,20 +148,38 @@ git_workspaces = [
     "/Users/you/projects",
 ]
 
-# ── Summarizer backend ────────────────────────────────────────────────────────
+# Optional per-repo tags, surfaced on each commit entry and used by the
+# summarizer to group output — see "App categories" below.
+[git_tags]
+"/Users/you/projects/repo-one" = ["repo-one", "backend"]
+
+# ── Summarizer backend ──────────────────────────────────────────────────────
 # "ollama" (default) | "claude" | "anthropic" | "openai" | "council"
 
 summarizer_backend = "ollama"
-ollama_url         = "http://localhost:11434"
-ollama_model       = "qwen2.5:7b"
+ollama_url          = "http://localhost:11434"
+ollama_model        = "qwen2.5:7b"
 
 # claude_model       = ""                      # leave empty for default model
-# anthropic_api_key  = "sk-ant-…"             # or set ANTHROPIC_API_KEY in env
+# anthropic_api_key  = "sk-ant-…"               # or set ANTHROPIC_API_KEY in env
 # anthropic_model    = "claude-haiku-4-5"
-# openai_api_key     = "sk-…"                  # or set OPENAI_API_KEY in env
+# openai_api_key     = "sk-…"                   # or set OPENAI_API_KEY in env
 # openai_model       = "gpt-4o-mini"
 # council_url        = "http://localhost:8001"
+
+# Optional: override the built-in app → category mapping (see "App categories")
+# [categories]
+# coding = ["Cursor", "Visual Studio Code", "Terminal"]
+
+# Optional: client work orders for grouping the daily summary (see "Client
+# work orders" below)
+# [[commesse]]
+# name     = "Backend revamp"
+# client   = "Acme Corp"
+# keywords = ["acme", "backend-api"]
 ```
+
+See [`worklog.example.toml`](worklog.example.toml) for the full, commented reference.
 
 ---
 
@@ -109,6 +188,8 @@ ollama_model       = "qwen2.5:7b"
 ### UI (recommended)
 
 ```bash
+worklog-ui
+# or, without installing the console script:
 python -m ui.app
 ```
 
@@ -116,19 +197,25 @@ A native macOS window lets you:
 
 - **Start / Stop** the activity poller
 - **Enrich** — pull today's git commits into the log
-- **Generate Summary** — run the enricher then call the LLM; a cancel button lets you abort mid-request
-- **Browse logs** — view any day's entries, delete individual entries, reset or wipe all logs
-- **Settings** — configure repos, backends, API keys, and idle timeout; changes are saved to `~/.worklog/config.toml`
+- **Generate Summary** — run the enricher then call the LLM, with live progress output,
+  backend-specific hints, and a cancel button to abort mid-request
+- **Browse logs** — view any day's entries, add a manual time block or note, delete
+  individual entries, reset today's log or wipe all logs
+- **Settings** — configure repos/workspaces, git tags, app categories, commesse, backends,
+  API keys, and idle timeout; changes are saved to `~/.worklog/config.toml`
 
-> **macOS permission:** the activity poller uses AppleScript via System Events to read the frontmost app and window title. macOS will prompt for **Accessibility** access the first time (System Settings → Privacy & Security → Accessibility). No keystrokes or mouse data are recorded.
+> **macOS permissions:** see [macOS permissions](#macos-permissions) below.
 
 ### CLI
 
 **Activity poller**
 
 ```bash
-python -m logger.activity_poller --once    # single snapshot
-python -m logger.activity_poller           # continuous loop
+worklog-poll --once      # single snapshot
+worklog-poll             # continuous loop
+# equivalently:
+python -m logger.activity_poller --once
+python -m logger.activity_poller
 ```
 
 **Git enricher**
@@ -148,15 +235,18 @@ python -m summarizer.daily_summary --print-prompt     # debug: show the prompt
 python -m summarizer.daily_summary --backend claude   # override backend
 ```
 
-Example output (with project tags):
+Generated summaries are written to `~/.worklog/summaries/{date}.md` and reused by the UI
+the next time you open that date.
+
+Example output (with commesse configured):
 
 ```
-## #my-api
+## Backend revamp
 
-Timezone-aware scheduling support (0.5h) [my-api]
-Analytics module refactoring — metric handling, filtering, query DTO consolidation (3.0h) [my-api]
-Session event & status logic — skip support, status sync, progress calculation (2.0h) [my-api]
-Redis logging fix — deduplicated connection events (0.5h) [my-api]
+Timezone-aware scheduling support (0.5h) [backend-api]
+Analytics module refactoring — metric handling, filtering, query DTO consolidation (3.0h) [backend-api]
+Session event & status logic — skip support, status sync, progress calculation (2.0h) [backend-api]
+Redis logging fix — deduplicated connection events (0.5h) [backend-api]
 
 ## General
 
@@ -183,7 +273,15 @@ Each line in the daily `.jsonl` file is one of:
 {"ts": "2026-06-18T11:45:00+02:00", "source": "git", "repo": "my-api", "type": "coding", "commit": "a1b2c3d4", "message": "feat: add user auth", "files_changed": 5, "insertions": 120, "deletions": 30}
 ```
 
-**Project tags** — add optional tags to any repo in the config; they appear in each commit entry and the summarizer groups output by tag:
+**Manual entry** (added from the UI, or by hand):
+```json
+{"ts": "2026-06-18T14:00:00", "type": "coding", "manual": true, "end_ts": "2026-06-18T15:30:00", "note": "client call prep"}
+```
+`end_ts` and `note` are both optional — omit `end_ts` for a point-in-time entry, omit `note`
+to let the summarizer describe it from context alone.
+
+**Project tags** — add optional tags to any repo in the config; they appear in each commit
+entry and the summarizer groups output by tag:
 
 ```toml
 [git_tags]
@@ -194,7 +292,9 @@ Each line in the daily `.jsonl` file is one of:
 
 ## App categories
 
-Edit `config.py` to add apps to the right category. The poller uses these to tag each snapshot:
+Each app is classified into a category — first match wins. The built-in defaults live in
+`config.py`; override them from **Settings › Categories** in the UI (persisted to the
+`[categories]` table in `~/.worklog/config.toml`) or by editing the table directly.
 
 | Category | Examples |
 |---|---|
@@ -204,6 +304,36 @@ Edit `config.py` to add apps to the right category. The poller uses these to tag
 | `design` | Figma, Sketch |
 | `communication` | Slack, Mail, Telegram |
 | `productivity` | Notion, Obsidian |
+
+A `meeting`-category app is further tagged `type: "meeting"` when its window title contains
+a signal word (`call`, `standup`, `voice`, `video`, …) — see `MEETING_WINDOW_SIGNALS` in
+`config.py`.
+
+---
+
+## Client work orders (commesse)
+
+If you bill or report time by client or project, define a `[[commesse]]` entry per work
+order in your config (or from **Settings › Commesse** in the UI):
+
+```toml
+[[commesse]]
+name     = "Backend revamp"
+client   = "Acme Corp"
+keywords = ["acme", "backend-api"]
+
+[[commesse]]
+name     = "Redesign sito"
+client   = "Beta srl"
+keywords = ["beta", "figma"]
+```
+
+The daily summarizer matches each session against a commessa's name, client, keywords, or
+associated git repo/tag, and groups matching sessions under that commessa's own heading in
+the output. A session is only assigned when there's concrete evidence — a matching repo,
+tag, or explicit mention — never a vague thematic guess. Everything unmatched is grouped
+under a `## General` heading, exactly as it would be with no commesse configured at all.
+Omit the table entirely if you don't track work by client.
 
 ---
 
@@ -219,9 +349,24 @@ Edit `config.py` to add apps to the right category. The poller uses these to tag
 
 ---
 
+## macOS permissions
+
+- **Accessibility** — the activity poller reads the frontmost app and window title via
+  AppleScript/System Events. macOS prompts for this the first time you start the poller
+  (System Settings → Privacy & Security → Accessibility). No keystrokes or mouse content
+  are ever recorded — only *whether* there was recent input, to detect idle time (via
+  CoreGraphics, which needs no special permission at all).
+- **Automation** — reading the active tab title/URL from a supported browser (Chrome, Arc,
+  Safari, Firefox, Brave) triggers a one-time "worklog wants to control \<Browser\>" prompt
+  per browser the first time it's polled while that browser is frontmost.
+
+---
+
 ## Building the app
 
-`build_dmg.sh` packages worklog into a standalone `worklog.app` (via `py2app`) and wraps it in a distributable DMG. Run it from the project root with the venv from [Installation](#installation) already set up:
+`build_dmg.sh` packages worklog into a standalone `worklog.app` (via `py2app`) and wraps it
+in a distributable DMG. Run it from the project root with the venv from
+[Installation](#installation) already set up:
 
 ```bash
 bash build_dmg.sh
@@ -236,13 +381,17 @@ This script:
 5. Bundles any native `.dylib`s py2app misses so the app runs standalone.
 6. Packs `dist/worklog.app` into `dist/worklog-<version>.dmg`.
 
-Output: `dist/worklog-<version>.dmg` (version is set by `VERSION` at the top of `build_dmg.sh`).
+Output: `dist/worklog-<version>.dmg` (version is set by `VERSION` at the top of
+`build_dmg.sh`).
 
 Notes:
 
-- macOS + Xcode Command Line Tools required (`xcode-select --install`) — py2app and PyObjC need them.
-- To build without the DMG step, run `python setup.py py2app` directly after `make_icon.py`; the result is still `dist/worklog.app`.
-- `PYTHON=/path/to/python bash build_dmg.sh` overrides which interpreter builds the app (defaults to `.venv/bin/python`).
+- macOS + Xcode Command Line Tools required (`xcode-select --install`) — py2app and PyObjC
+  need them.
+- To build without the DMG step, run `python setup.py py2app` directly after
+  `make_icon.py`; the result is still `dist/worklog.app`.
+- `PYTHON=/path/to/python bash build_dmg.sh` overrides which interpreter builds the app
+  (defaults to `.venv/bin/python`).
 
 ---
 

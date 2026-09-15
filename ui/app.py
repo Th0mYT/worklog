@@ -1188,6 +1188,7 @@ _HTML = """<!DOCTYPE html>
   let _progressStart = 0;
   let _promptVisible = false;
   let _lastOutput = '';
+  let _lastToday = todayStr();
 
   // ── toast ───────────────────────────────────────────────────────────────────
 
@@ -1237,6 +1238,23 @@ _HTML = """<!DOCTYPE html>
     const d = iso > today ? today : iso;
     document.getElementById('action-date').value = d;
     document.getElementById('btn-date-next').disabled = (d >= today);
+  }
+
+  // If the calendar day has rolled over while the app stayed open, advance
+  // the reference day too — but only when it was still pointing at "today",
+  // so a date the user deliberately navigated to is left untouched.
+  function syncToday() {
+    const t = todayStr();
+    if (t === _lastToday) return;
+    const cur = document.getElementById('action-date').value;
+    const wasOnToday = !cur || cur === _lastToday;
+    _lastToday = t;
+    if (wasOnToday) {
+      setDate(t);
+      loadSavedSummary(t);
+    } else {
+      document.getElementById('btn-date-next').disabled = (cur >= t);
+    }
   }
 
   function stepDate(delta) {
@@ -1437,8 +1455,9 @@ _HTML = """<!DOCTYPE html>
     document.getElementById('view-settings').style.display  = 'none';
     document.getElementById('view-log-detail').style.display = 'none';
     document.getElementById('view-main').style.display      = 'flex';
-    setDate(todayStr());
-    loadSavedSummary(todayStr());
+    _lastToday = todayStr();
+    setDate(_lastToday);
+    loadSavedSummary(_lastToday);
     refresh();
     _refreshTimer = setInterval(refresh, 1000);
   }
@@ -1484,6 +1503,7 @@ _HTML = """<!DOCTYPE html>
 
   async function refresh() {
     if (!api) return;
+    syncToday();
     try {
       const [s, l] = await Promise.all([api.status(), api.logs()]);
 
