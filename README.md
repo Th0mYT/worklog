@@ -41,6 +41,12 @@ remote llm-council instance).
 - **Manual time blocks** — backfill a gap the poller missed, or log time by hand as a point
   event or a start/end range, with an optional free-text note passed straight into the
   summarizer prompt.
+- **Editable project tags** — the poller and git enricher tag entries automatically when a
+  configured repo name shows up in the window title, but that match isn't always there (an
+  IDE window title that doesn't include the repo folder name, a repo not yet in your
+  config…). From the log detail view you can add or fix the project tag(s) on any entry by
+  hand, so it's grouped under the right commessa/category in the summary instead of landing
+  in "Non assegnata" and needing a manual fix afterward.
 - **AI daily summaries** — five interchangeable backends (Ollama, Claude CLI, Anthropic,
   OpenAI, llm-council), with live progress feedback and a cancel button.
 - **Client work orders (commesse)** — group a day's sessions by client/project based on
@@ -281,12 +287,19 @@ Each line in the daily `.jsonl` file is one of:
 to let the summarizer describe it from context alone.
 
 **Project tags** — add optional tags to any repo in the config; they appear in each commit
-entry and the summarizer groups output by tag:
+and activity entry (when the window title matches the repo name) and the summarizer groups
+output by tag:
 
 ```toml
 [git_tags]
 "/Users/you/projects/my-api" = ["my-api", "backend"]
 ```
+
+When the automatic window-title match misses an entry — an IDE title that doesn't include
+the repo folder name, or a repo you haven't tagged yet — open that day in the UI, click the
+🏷 button on the entry, and add the tag(s) by hand. It's saved straight into the entry's
+`tags` field, so it's matched by the commessa/tag grouping rules exactly like an automatic
+tag.
 
 ---
 

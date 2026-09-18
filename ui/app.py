@@ -533,6 +533,47 @@ _HTML = """<!DOCTYPE html>
     }
     .detail-entry:hover .entry-del { opacity: 1; }
     .detail-entry .entry-del:hover { color: var(--danger, #e05252); }
+    .detail-entry .entry-tag-btn {
+      opacity: 0;
+      flex-shrink: 0;
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--text-ter);
+      padding: 0 2px;
+      line-height: 1;
+      transition: opacity 0.15s, color 0.15s;
+      align-self: center;
+    }
+    .detail-entry:hover .entry-tag-btn { opacity: 1; }
+    .detail-entry .entry-tag-btn:hover { color: var(--accent); }
+    .detail-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 3px;
+    }
+    .pill-tag { color: #8e3fa8; background: rgba(142,63,168,.10); }
+    @media (prefers-color-scheme: dark) {
+      .pill-tag { color: #d69bee; background: rgba(142,63,168,.20); }
+    }
+    .tag-edit-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      margin-top: 4px;
+    }
+    .tag-edit-row input.repo-tags { padding: 5px 8px; }
+    .tag-edit-row button {
+      flex-shrink: 0;
+      border: none;
+      border-radius: 6px;
+      font-size: 10.5px;
+      font-weight: 500;
+      padding: 4px 8px;
+      cursor: pointer;
+    }
     .detail-time {
       font-family: "SF Mono", Menlo, monospace;
       font-size: 11px;
@@ -1173,6 +1214,7 @@ _HTML = """<!DOCTYPE html>
         </div>
       </div>
       <div id="detail-list"></div>
+      <datalist id="tag-suggestions"></datalist>
     </div>
   </div><!-- /view-log-detail -->
 
@@ -1829,10 +1871,38 @@ _HTML = """<!DOCTYPE html>
 
   // ── log detail ───────────────────────────────────────────────────────────────
 
+  let _editingTagsTs = null;
+
   function _delBtn(ts, date) {
     const safeTs   = ts.replace(/"/g, '&quot;');
     const safeDate = date.replace(/"/g, '&quot;');
     return `<button class="entry-del" title="Delete entry" onclick="deleteEntry('${safeDate}','${safeTs}')">×</button>`;
+  }
+
+  function _tagBtn(ts) {
+    const safeTs = ts.replace(/"/g, '&quot;');
+    return `<button class="entry-tag-btn" title="Edit project tags" onclick="editEntryTags('${safeTs}')">🏷</button>`;
+  }
+
+  function _tagsSection(e, date) {
+    const ts = e.ts || '';
+    if (_editingTagsTs === ts) {
+      const current = (e.tags || []).join(', ').replace(/"/g, '&quot;');
+      const safeTs   = ts.replace(/"/g, '&quot;');
+      const safeDate = date.replace(/"/g, '&quot;');
+      return (
+        '<div class="tag-edit-row">' +
+          `<input type="text" class="repo-tags" id="tag-edit-input" list="tag-suggestions" ` +
+            `placeholder="project tags: libertas-backend, backend…" value="${current}">` +
+          `<button class="btn-blue" onclick="saveEntryTags('${safeDate}','${safeTs}')">Save</button>` +
+          `<button class="btn-gray" onclick="cancelEditTags()">Cancel</button>` +
+        '</div>'
+      );
+    }
+    const tags = e.tags || [];
+    return tags.length
+      ? '<div class="detail-tags">' + tags.map(t => `<span class="type-pill pill-tag">#${_esc(t)}</span>`).join('') + '</div>'
+      : '';
   }
 
   function renderDetailEntry(e, date) {
@@ -1846,7 +1916,9 @@ _HTML = """<!DOCTYPE html>
           '<span class="detail-text">' +
             `<div>${e.repo ? '[' + e.repo + '] ' : ''}${e.message || ''}</div>` +
             `<div class="detail-stats">${stats}</div>` +
+            _tagsSection(e, date) +
           '</span>' +
+          _tagBtn(e.ts || '') +
           _delBtn(e.ts || '', date) +
         '</div>'
       );
@@ -1867,7 +1939,9 @@ _HTML = """<!DOCTYPE html>
           (win ? `<div class="detail-sub">${win}</div>` : '') +
           (url ? `<div class="detail-sub" style="-webkit-user-select:text;user-select:text">${url}</div>` : '') +
           (note ? `<div class="detail-sub">${_esc(note)}</div>` : '') +
+          _tagsSection(e, date) +
         '</span>' +
+        _tagBtn(e.ts || '') +
         _delBtn(e.ts || '', date) +
       '</div>'
     );
@@ -1878,6 +1952,26 @@ _HTML = """<!DOCTYPE html>
     if (!r.ok) { showToast('Failed to delete entry', 'error'); return; }
     await showLogDetail(date);
     showToast('Entry deleted');
+  }
+
+  function editEntryTags(ts) {
+    _editingTagsTs = ts;
+    showLogDetail(_detailDate, true);
+  }
+
+  function cancelEditTags() {
+    _editingTagsTs = null;
+    showLogDetail(_detailDate, true);
+  }
+
+  async function saveEntryTags(date, ts) {
+    const input = document.getElementById('tag-edit-input');
+    const tags = input ? input.value : '';
+    const r = await api.set_entry_tags(date, ts, tags);
+    if (!r || !r.ok) { showToast((r && r.error) || 'Failed to save tags', 'error'); return; }
+    _editingTagsTs = null;
+    await showLogDetail(date, true);
+    showToast('Tags updated', 'ok');
   }
 
   // ── manual add record ────────────────────────────────────────────────────────
@@ -1924,12 +2018,20 @@ _HTML = """<!DOCTYPE html>
     showToast(endTime ? 'Block added' : 'Record added', 'ok');
   }
 
-  async function showLogDetail(date) {
-    clearInterval(_refreshTimer);
-    _refreshTimer = null;
-    _detailDate = date;
-    hideAddRecord();
-    setDate(date);
+  async function showLogDetail(date, refreshOnly = false) {
+    if (!refreshOnly) {
+      clearInterval(_refreshTimer);
+      _refreshTimer = null;
+      _detailDate = date;
+      hideAddRecord();
+      setDate(date);
+      _editingTagsTs = null;
+      try {
+        const t = await api.known_tags();
+        document.getElementById('tag-suggestions').innerHTML =
+          (t.tags || []).map(x => `<option value="${_esc(x)}">`).join('');
+      } catch (e) {}
+    }
     const data = await api.log_entries(date);
     document.getElementById('detail-date').textContent = date;
     document.getElementById('detail-count').textContent =
@@ -2357,6 +2459,74 @@ class _API:
                 kept.append(line)
             f.write_text('\n'.join(kept) + ('\n' if kept else ''))
             return {"ok": removed}
+        except OSError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def known_tags(self) -> dict:
+        """Tag suggestions for the entry tag editor: commessa names/keywords + configured git tags."""
+        seen: set[str] = set()
+        tags: list[str] = []
+        for c in Config.COMMESSE:
+            for t in [c.get('name', '')] + list(c.get('keywords', [])):
+                t = str(t).strip()
+                if t and t.lower() not in seen:
+                    seen.add(t.lower())
+                    tags.append(t)
+        for repo_tags in Config.GIT_REPO_TAGS.values():
+            for t in repo_tags:
+                t = str(t).strip()
+                if t and t.lower() not in seen:
+                    seen.add(t.lower())
+                    tags.append(t)
+        return {"tags": sorted(tags, key=str.lower)}
+
+    def set_entry_tags(self, date: str, ts: str, tags: str) -> dict:
+        """Set (or clear) the free-text project tags on an existing entry.
+
+        `tags` is a comma-separated string, cleaned into a deduped list and
+        stored under the entry's `tags` key — the same field the poller and
+        git enricher already populate from repo-tag matches, so a
+        manually-tagged entry (e.g. 30 min in an IDE on a project the
+        automatic window-title match missed) is matched by the summarizer
+        commesse/category rules exactly like an automatic one.
+        """
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for t in str(tags or '').split(','):
+            t = t.strip()
+            if t and t.lower() not in seen:
+                seen.add(t.lower())
+                cleaned.append(t)
+
+        f = Path(Config.LOGS_DIR) / f"{date}.jsonl"
+        if not f.exists():
+            return {"ok": False}
+        try:
+            lines = f.read_text().splitlines()
+            out = []
+            found = False
+            for line in lines:
+                if not line.strip():
+                    continue
+                if not found:
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        out.append(line)
+                        continue
+                    if entry.get('ts') == ts:
+                        found = True
+                        if cleaned:
+                            entry['tags'] = cleaned
+                        else:
+                            entry.pop('tags', None)
+                        out.append(json.dumps(entry))
+                        continue
+                out.append(line)
+            if not found:
+                return {"ok": False}
+            f.write_text('\n'.join(out) + '\n')
+            return {"ok": True, "tags": cleaned}
         except OSError as exc:
             return {"ok": False, "error": str(exc)}
 
