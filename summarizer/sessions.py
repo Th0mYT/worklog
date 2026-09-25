@@ -33,7 +33,7 @@ INHERIT_WINDOW = timedelta(minutes=120)
 MIN_BLOCK_MINUTES = 5
 ORPHAN_COMMIT_MINUTES = 15
 ROUND_TO_HOURS = 0.25
-UNASSIGNED = 'Non assegnata'
+UNASSIGNED = 'Fuori commessa'
 
 _GAP_BEGIN = {'idle_start', 'pause', 'stop'}
 _GAP_END = {'idle_end', 'resume', 'start'}

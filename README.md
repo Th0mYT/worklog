@@ -55,7 +55,7 @@ remote llm-council instance).
   IDE window title that doesn't include the repo folder name, a repo not yet in your
   config…). From the log detail view you can add or fix the project tag(s) on any entry by
   hand, so it's grouped under the right commessa/category in the summary instead of landing
-  in "Non assegnata" and needing a manual fix afterward.
+  in "Fuori commessa" and needing a manual fix afterward.
 - **AI daily summaries** — five interchangeable backends (Ollama, Claude CLI, Anthropic,
   OpenAI, llm-council), with live progress feedback and a cancel button. Durations, gaps,
   commessa assignment and the total are computed in code; the model only writes one short
@@ -301,7 +301,7 @@ Analytics module refactoring — metric handling, filtering, query DTO consolida
 Session event & status logic — skip support, status sync, progress calculation (2.0h) [backend-api]
 Redis logging fix — deduplicated connection events (0.5h) [backend-api]
 
-## Non assegnata
+## Fuori commessa
 
 Team communication and PR reviews (1.0h) [Slack]
 
@@ -409,7 +409,7 @@ appears as a whole token in the repo name, branch, IDE project/file, window or p
 tag, note or commit message (`KH-682` matches `feature/KH-682-fix` but not `KH-6820`); the
 client name counts as a keyword only when a single commessa has that client. Unassigned
 work in a repo also takes the commessa of that repo's next matching commit (within 2 hours).
-Everything unmatched goes under `## Non assegnata`. Put a ticket key or repo name in
+Everything unmatched goes under `## Fuori commessa`. Put a ticket key or repo name in
 `keywords` and both the IDE time and the commits will land in the right place. Omit the
 table entirely if you don't track work by client.
 

@@ -60,7 +60,7 @@ class Rendering(unittest.TestCase):
         lines = text.splitlines()
         self.assertEqual(lines[0], '## Screening')
         self.assertRegex(lines[1], r'^Built the endpoint \(\d+(\.\d+)?h\) \[api\]$')
-        self.assertIn('## Non assegnata', lines)
+        self.assertIn('## Fuori commessa', lines)
         self.assertRegex(lines[-1], r'^Total: \d+(\.\d+)?h$')
         listed = sum(float(l.rsplit('(', 1)[1].split('h')[0]) for l in lines if l.endswith(']') or l.endswith('h)'))
         self.assertAlmostEqual(listed, day.total_hours)
