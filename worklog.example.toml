@@ -8,7 +8,10 @@ logs_dir = "~/.worklog/logs"
 # Summaries are written here automatically and reloaded when you revisit a date.
 summaries_dir = "~/.worklog/summaries"
 
-# How often the activity poller captures a snapshot (seconds)
+# The poller checks the frontmost window every `sample_interval` seconds and writes
+# an entry only when the app/window changes, plus a heartbeat every `poll_interval`
+# seconds so a long stretch in one window still shows up.
+sample_interval = 20
 poll_interval = 300
 
 # Seconds of keyboard/mouse inactivity before the poller pauses.
@@ -18,6 +21,17 @@ inactivity_timeout = 300
 # Git author filter — matched against commit author name or email.
 # Leave empty to include all authors.
 git_author = "yourname"
+
+# Apps that are never logged (case-insensitive). The time spent in them is left out.
+ignore_apps = ["worklog"]
+
+# Categories whose window titles are never written to the log (chat names, mail
+# subjects…). Category names are the ones in [categories] below.
+redact_title_types = ["communication"]
+
+# Browser pages on a domain in neither [browser_rules] list: "hide" keeps only the
+# domain and leaves the time out of the summary; "work" counts it as work.
+browser_unknown = "hide"
 
 # Absolute paths to the git repos you want enriched in daily summaries
 git_repos = [
@@ -71,3 +85,12 @@ openai_model = "gpt-4o-mini"
 # name     = "Redesign sito"
 # client   = "Beta srl"
 # keywords = ["beta", "figma"]
+
+# Browser privacy rules. Only pages on a `work` domain keep their title and URL
+# (query string and fragment are always dropped) in the log and reach the summary.
+# Pages on `personal` domains, unclassified domains, and private/incognito windows
+# never do. Subdomains match (github.com also covers gist.github.com).
+# Editable from Settings › Browser & privacy; omit the table to use the defaults.
+# [browser_rules]
+# work     = ["github.com", "gitlab.com", "atlassian.net", "localhost"]
+# personal = ["twitch.tv", "netflix.com"]

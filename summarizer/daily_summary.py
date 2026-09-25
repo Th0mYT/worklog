@@ -1,6 +1,12 @@
 """
 Daily summarizer — reads the JSONL log for a given date and produces
-a timesheet-ready summary via a local or cloud LLM.
+a timesheet-ready summary.
+
+The log is first turned into timesheet *blocks* by summarizer/sessions.py
+(durations, gaps, privacy filtering, commessa assignment — all in code). The
+LLM is only asked to write one description per block; headers, durations and
+the total are assembled here, so a weak or confused model can no longer skew
+the numbers, and a missing description falls back to one built from the data.
 
 Backends (set summarizer_backend in config.toml):
   ollama   — single Ollama model, works on any modern laptop  [default]
@@ -13,10 +19,12 @@ Usage:
   python -m summarizer.daily_summary                    # summarize today
   python -m summarizer.daily_summary --date 2026-06-17
   python -m summarizer.daily_summary --date 2026-06-17 --print-prompt
+  python -m summarizer.daily_summary --date 2026-06-17 --no-llm   # descriptions built from the data
   python -m summarizer.daily_summary --backend openai   # override config
 """
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +35,8 @@ from datetime import date, datetime
 from pathlib import Path
 
 from config import Config
+from logger.timeutil import entry_time
+from summarizer.sessions import UNASSIGNED, Block, DayModel, build_day
 
 # ---------------------------------------------------------------------------
 # Log loading
@@ -45,148 +55,215 @@ def _load_entries(log_file: Path) -> list[dict]:
                 entries.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
-    return sorted(entries, key=lambda e: e.get('ts', ''))
+    return sorted(entries, key=entry_time)
 
 
 # ---------------------------------------------------------------------------
-# Prompt building (shared by both backends)
+# Prompt building
 # ---------------------------------------------------------------------------
 
-def _tag_suffix(e: dict) -> str:
-    tags = e.get('tags') or []
-    return ('  [' + ', '.join(f'#{t}' for t in tags) + ']') if tags else ''
+_MAX_FOCUS = 6
+_MAX_COMMITS = 15
+_MAX_COMMIT_MSG = 160
 
 
-def _format_entries(entries: list[dict]) -> str:
-    lines = []
-    for e in entries:
-        ts = e.get('ts', '')[:16]
-        suffix = _tag_suffix(e)
-        if e.get('source') == 'git':
-            stats = f"+{e.get('insertions', 0)}/-{e.get('deletions', 0)} in {e.get('files_changed', 0)} file(s)"
-            lines.append(f"{ts}  [git/{e.get('repo', '?')}]  {e.get('message', '')}  ({stats}){suffix}")
-            continue
+def _fmt_hours(h: float) -> str:
+    return f'{h:g}h'
 
-        activity_type = e.get('type', 'other')
-        note = (e.get('note') or '').strip()
-        end_ts = e.get('end_ts', '')
-        if end_ts:
-            # Manual, user-reported block — the user already gave an exact
-            # start/end, so show it as a range instead of a single timestamp.
-            ts = f"{ts}–{end_ts[11:16]}"
 
-        if note:
-            label = note
-        elif activity_type == 'browser':
-            # Tab/site detail is deliberately withheld from the prompt so the
-            # summary can never leak exactly what was browsed (e.g. "Google
-            # (Twitch)") — only the fact that a browsing session happened.
-            label = e.get('app', '')
-        else:
-            app = e.get('app', '')
-            window = e.get('tab_title') or e.get('window') or ''
-            label = f"{app} — {window}" if window else app
-        lines.append(f"{ts}  [{activity_type}]  {label}{suffix}")
+def _fmt_minutes(m: float) -> str:
+    m = int(round(m))
+    return f'{m // 60}h{m % 60:02d}m' if m >= 60 else f'{m}m'
+
+
+def _hhmm(dt: datetime) -> str:
+    return dt.strftime('%H:%M')
+
+
+def _block_id(i: int) -> str:
+    return f'b{i}'
+
+
+def _format_block(block_id: str, b: Block) -> str:
+    label = b.assignment or 'none'
+    approx = '  (time estimated: no activity was tracked around the commits)' if b.nominal_minutes else ''
+    lines = [f'[{block_id}]  {_hhmm(b.start)}–{_hhmm(b.end)}  {_fmt_hours(b.hours)}  assignment: {label}{approx}']
+
+    mix = b.minutes_by(lambda e: e.get('type')).most_common()
+    if len(mix) > 1:
+        total = sum(m for _, m in mix) or 1
+        lines.append('  mix: ' + ', '.join(f'{name} {round(100 * m / total)}%' for name, m in mix))
+    apps = b.top_apps().most_common(4)
+    if apps:
+        lines.append('  apps: ' + ', '.join(f'{name} {_fmt_minutes(m)}' for name, m in apps))
+    focus = b.top_focus().most_common(_MAX_FOCUS)
+    if focus:
+        lines.append('  activity: ' + '; '.join(f'{name} ({_fmt_minutes(m)})' for name, m in focus))
+    branches = b.branches()
+    if branches:
+        lines.append('  branches: ' + ', '.join(branches[:4]))
+    wip = b.wip_files()
+    if wip:
+        lines.append('  uncommitted files: ' + ', '.join(wip))
+    notes = b.notes()
+    if notes:
+        lines.append('  user notes (own words, use as the base): ' + ' | '.join(notes))
+    if b.commits:
+        lines.append('  commits:')
+        for c in b.commits[:_MAX_COMMITS]:
+            e = c.entry
+            msg = (e.get('message') or '')[:_MAX_COMMIT_MSG]
+            lines.append(f"    {_hhmm(c.ts)} [{e.get('repo', '?')}] {msg}")
+        if len(b.commits) > _MAX_COMMITS:
+            lines.append(f'    (+{len(b.commits) - _MAX_COMMITS} more commits)')
     return '\n'.join(lines)
 
 
-def _commesse_block() -> str:
-    lines = []
-    for c in Config.COMMESSE:
-        client = f" — client: {c['client']}" if c.get('client') else ''
-        kw = f" (keywords: {', '.join(c['keywords'])})" if c.get('keywords') else ''
-        lines.append(f"  - {c['name']}{client}{kw}")
-    return '\n'.join(lines) + '\n'
+def build_prompt(target: date, day: DayModel) -> str:
+    blocks = '\n\n'.join(_format_block(_block_id(i), b) for i, b in enumerate(day.blocks, 1))
+    return f"""You are helping write a timesheet for {target}.
+The activity log has already been analysed: the day is split into numbered BLOCKS whose
+durations are final. Your only job is to write ONE short description per block.
+
+What a block shows (most reliable evidence first):
+  commits     git commits made during the block — base the description on these
+  activity    projects / files / pages / windows with the minutes spent on each
+  apps        time per application
+  branches, uncommitted files, user notes — extra hints
+
+RULES:
+1. Reply with exactly one line per block, in this format and nothing else:
+   b1: description
+2. The description is one plain sentence (max ~110 characters) saying WHAT was done —
+   the feature, bug or topic — not which app was open.
+3. Coding blocks: ground it in the commit messages, branch names and file names. Merge
+   several commits into one coherent description; do not list them all.
+4. Meeting blocks: name the meeting when a title is given.
+5. Never invent detail that is not in the block. If the evidence is thin, stay generic
+   (e.g. "Development work on <project>").
+6. Do not include durations, times or block ids inside the description. No headers,
+   no totals, no commentary.
+7. Write in the language of the commit messages / user notes (English if there are none).
+
+BLOCKS:
+{blocks}
+"""
 
 
-def build_prompt(target: date, entries: list[dict]) -> str:
-    has_activity = any(e.get('source') != 'git' for e in entries)
-    has_git      = any(e.get('source') == 'git' for e in entries)
-    has_tags     = any(e.get('tags') for e in entries)
+# ---------------------------------------------------------------------------
+# Turning the model's answer (or the data) into the final summary
+# ---------------------------------------------------------------------------
 
-    notes = []
-    if not has_activity:
-        notes.append('Note: only git commits are available — the activity poller was not running.')
-    if not has_git:
-        notes.append('Note: no git commits found — git enricher was not run.')
-    note_block = ('\n' + '\n'.join(notes) + '\n') if notes else ''
+_DESC_LINE = re.compile(r'^[\s\-*•>#]*\**\[?(b\d+)\]?\**\s*[:.\-–)]\s*(.+?)\s*$', re.IGNORECASE)
+_TRAILING_DURATION = re.compile(r'\s*[(\[]\s*\d+(?:\.\d+)?\s*h\s*[)\]]\s*$', re.IGNORECASE)
 
+
+def _clean_description(text: str) -> str:
+    text = _TRAILING_DURATION.sub('', text.replace('**', '').strip().strip('"\''))
+    return re.sub(r'\s+', ' ', text)[:220].strip()
+
+
+def parse_descriptions(text: str, valid_ids: set[str]) -> dict[str, str]:
+    """Extract {'b1': 'description'} pairs from the model's reply; unknown ids are ignored."""
+    found: dict[str, str] = {}
+    for line in text.splitlines():
+        m = _DESC_LINE.match(line)
+        if not m:
+            continue
+        block_id = m.group(1).lower()
+        desc = _clean_description(m.group(2))
+        if block_id in valid_ids and desc and block_id not in found:
+            found[block_id] = desc
+    return found
+
+
+_PREFIX = {
+    'coding': 'Development', 'meeting': 'Meeting', 'browser': 'Web research',
+    'communication': 'Communication', 'design': 'Design', 'productivity': 'Productivity',
+}
+
+
+def _shorten(text: str, limit: int) -> str:
+    """Cut at a word boundary with an ellipsis."""
+    text = re.sub(r'\s+', ' ', text).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(' ', 1)[0].rstrip(' ,;:.') + '…'
+
+
+def fallback_description(b: Block) -> str:
+    """A description built straight from the block's data, for when the model gave none."""
+    notes = b.notes()
+    if notes:
+        return '; '.join(notes)[:200]
+    if b.commits:
+        msgs = [(c.entry.get('message') or '').strip() for c in b.commits]
+        text = '; '.join(_shorten(m, 90) for m in msgs[:2] if m)
+        if len(msgs) > 2:
+            text += f' (+{len(msgs) - 2} more commits)'
+        return text or 'Commits'
+    types = b.minutes_by(lambda e: e.get('type'))
+    main = types.most_common(1)[0][0] if types else 'other'
+    focus = [name for name, _ in b.top_focus().most_common(3)]
+    prefix = _PREFIX.get(main, 'Activity')
+    return f"{prefix}: {', '.join(focus)}" if focus else prefix
+
+
+def _reference(b: Block) -> str:
+    repos = b.repos()
+    if repos:
+        return ', '.join(repos[:2])
+    apps = b.top_apps().most_common(1)
+    return apps[0][0] if apps else ''
+
+
+def _headers(day: DayModel) -> tuple[list[str | None], str]:
+    """Ordered group keys and the mode ('commesse' | 'tags' | 'plain')."""
+    present = {b.assignment for b in day.blocks}
     if Config.COMMESSE:
-        tag_rules = (
-            '8. Only put a session under a commessa header when there is clear, concrete\n'
-            '   evidence — its git repo/#tag, or an explicit mention of the commessa\'s name,\n'
-            '   client, or keyword in a commit message or window title. Do not guess from\n'
-            '   vague thematic similarity:\n'
-            f'{_commesse_block()}'
-            '   Everything else — every browser session, every chat/meeting session, and any\n'
-            '   coding with no repo/keyword match — is unassigned. Build and merge unassigned\n'
-            '   sessions exactly as you would with no commesse at all: combine interleaved\n'
-            '   short activity switches (e.g. coding + browser + chat across an afternoon)\n'
-            '   into ONE descriptive session per rule 1 — never split them into one line per\n'
-            '   5-minute snapshot just because they didn\'t match a commessa.\n'
-            '   Put every matched session under its own "## <commessa name>" header (reuse\n'
-            '   the same header for all of that commessa\'s sessions) and every unassigned\n'
-            '   session under a single "## Non assegnata" header.\n'
-            '9. End with a blank line then:\n'
-            '   Total: Xh'
-        )
-    elif has_tags:
-        tag_rules = (
-            '8. Some entries end with project tags like [#ddh, #backend]. These are USER-DEFINED\n'
-            '   PROJECT TAGS — completely different from the activity-type labels like [coding] or\n'
-            '   [other] that appear in position 2 of each line. Do NOT treat activity types as tags.\n'
-            '   Group sessions by their project tag under a "## #tag-name" header.\n'
-            '   Untagged sessions go under "## General" (omit "## General" if all sessions are tagged).\n'
-            '9. End with a blank line then:\n'
-            '   Total: Xh'
-        )
-    else:
-        tag_rules = (
-            '8. End with a blank line then:\n'
-            '   Total: Xh'
-        )
+        order: list[str | None] = [c['name'] for c in Config.COMMESSE if c['name'] in present]
+        if None in present:
+            order.append(None)
+        return order, 'commesse'
+    if any(present):
+        order = sorted((a for a in present if a), key=lambda a: min(
+            b.start for b in day.blocks if b.assignment == a))
+        if None in present:
+            order.append(None)
+        return order, 'tags'
+    return [None], 'plain'
 
-    return f"""You are analyzing a PC activity log to produce a timesheet summary for {target}.
-{note_block}
-Log entry format:
-  TIMESTAMP  [activity-type]  app/description  (stats if git)  [#project-tags if any]
 
-A line with a TIMESTAMP–TIMESTAMP range instead of a single timestamp is a
-manual, user-reported block (used to backfill a gap when the tracker wasn't
-running) — the user already gave the exact start and end, so use those times
-directly as the session duration instead of estimating it, and use the
-description given as the session's label.
+def render_summary(day: DayModel, descriptions: dict[str, str]) -> str:
+    ids = {id(b): _block_id(i) for i, b in enumerate(day.blocks, 1)}
+    order, mode = _headers(day)
+    out: list[str] = []
+    for key in order:
+        group = [b for b in day.blocks if b.assignment == key]
+        if mode != 'plain':
+            out.append(f'## {key if key else (UNASSIGNED if mode == "commesse" else "General")}')
+        for b in group:
+            desc = descriptions.get(ids[id(b)]) or fallback_description(b)
+            ref = _reference(b)
+            out.append(f'{desc} ({_fmt_hours(b.hours)})' + (f' [{ref}]' if ref else ''))
+    out += ['', f'Total: {_fmt_hours(day.total_hours)}']
+    return '\n'.join(out)
 
-Activity-type labels (position 2, in brackets) — these classify the app, they are NOT tags:
-  [git/repo]       committed change — has timestamp, message, line stats
-  [coding]         active coding session snapshot (every ~5 min)
-  [meeting]        active call / video meeting snapshot
-  [browser]        browsing session — no tab/site title is included (kept generic on purpose)
-  [design]         design tool (Figma, Sketch…)
-  [communication]  chat app (Slack, Mail…) — not a live call
-  [other]          unclassified app
 
-Project tags (optional, at the END of a line, prefixed with #) identify the project/client.
-Example line with tags: 2026-06-18T17:39  [git/my-api]  feat: add endpoint (+1/-0 in 1 file(s))  [#acme, #backend]
-
-ACTIVITY LOG:
-{_format_entries(entries)}
-
-TASK:
-Produce a concise timesheet for this day. Rules:
-1. Group related activities into sessions. A gap > 30 min = new session or break.
-2. Estimate each session duration from the first and last timestamp in the group.
-3. Coding sessions: describe the work using commit messages, not raw text.
-4. Meeting sessions: name the meeting from the window title if visible.
-5. Browser sessions: report generically as "Browser session" (or similar). No tab/site
-   detail is present in the log — never guess, infer, or invent what site or topic it
-   was, and never fabricate detail for any other session type either.
-6. Skip sessions under 5 min unless they contain a git commit.
-7. Output ONE LINE PER SESSION in this exact format:
-   Description (Xh) [repo or tool reference if relevant]
-{tag_rules}
-
-No prose. No explanations. Only the session lines (and headers if project tags exist)."""
+def _describe_exclusions(day: DayModel) -> list[str]:
+    labels = {
+        'private': 'private browsing', 'personal-domain': 'personal sites',
+        'unclassified-domain': 'unclassified sites', 'marked-personal': 'entries marked personal',
+        'ignored-app': 'ignored apps', 'short': 'blocks under 5 min',
+    }
+    lines = []
+    parts = [f'{labels.get(k, k)} {_fmt_minutes(m)}' for k, m in day.excluded_minutes.most_common() if m >= 1]
+    if parts:
+        lines.append('Left out:  ' + ', '.join(parts))
+    if day.unclassified_domains:
+        top = ', '.join(d for d, _ in day.unclassified_domains.most_common(5))
+        lines.append(f'Tip:       classify these sites as work/personal in Settings › Browser: {top}')
+    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -397,6 +474,7 @@ def summarize(
     log_dir: Path | None = None,
     backend: str | None = None,
     print_prompt: bool = False,
+    no_llm: bool = False,
 ) -> bool:
     target  = target  or date.today()
     log_dir = log_dir or Path(Config.LOGS_DIR)
@@ -415,14 +493,30 @@ def summarize(
         return False
 
     git_count      = sum(1 for e in entries if e.get('source') == 'git')
-    activity_count = len(entries) - git_count
-    print(f'Entries:   {activity_count} activity snapshot(s), {git_count} git commit(s)')
+    marker_count   = sum(1 for e in entries if e.get('marker'))
+    activity_count = len(entries) - git_count - marker_count
+    print(f'Entries:   {activity_count} activity entries, {git_count} git commits')
 
-    prompt = build_prompt(target, entries)
+    day = build_day(entries)
+    for line in _describe_exclusions(day):
+        print(line)
+    if not day.blocks:
+        print(f'ERROR: nothing to summarize for {target} — every entry was filtered out or too short', file=sys.stderr)
+        return False
+    print(f'Blocks:    {len(day.blocks)}  ({_fmt_hours(day.total_hours)} in total)')
+
+    prompt = build_prompt(target, day)
 
     if print_prompt:
         print('\n' + '─' * 60 + '  PROMPT\n')
         print(prompt)
+        print('─' * 60)
+        return True
+
+    if no_llm:
+        print('Backend:   none (descriptions built from the data, nothing saved)')
+        print('─' * 60)
+        print(render_summary(day, {}))
         print('─' * 60)
         return True
 
@@ -442,21 +536,29 @@ def summarize(
     t0 = time.time()
     try:
         if backend == 'council':
-            summary = _call_council(prompt, Config.COUNCIL_URL)
+            reply = _call_council(prompt, Config.COUNCIL_URL)
         elif backend == 'claude':
-            summary = _call_claude(prompt, Config.CLAUDE_MODEL)
+            reply = _call_claude(prompt, Config.CLAUDE_MODEL)
         elif backend == 'anthropic':
-            summary = _call_anthropic(prompt, Config.ANTHROPIC_MODEL, Config.ANTHROPIC_API_KEY)
+            reply = _call_anthropic(prompt, Config.ANTHROPIC_MODEL, Config.ANTHROPIC_API_KEY)
         elif backend == 'openai':
-            summary = _call_openai(prompt, Config.OPENAI_MODEL, Config.OPENAI_API_KEY)
+            reply = _call_openai(prompt, Config.OPENAI_MODEL, Config.OPENAI_API_KEY)
         else:
-            summary = _call_ollama(prompt, Config.OLLAMA_MODEL, Config.OLLAMA_URL)
+            reply = _call_ollama(prompt, Config.OLLAMA_MODEL, Config.OLLAMA_URL)
     except (RuntimeError, urllib.error.URLError, OSError) as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return False
 
     elapsed = time.time() - t0
     print(f'Done in {elapsed:.1f}s')
+
+    ids = {_block_id(i) for i in range(1, len(day.blocks) + 1)}
+    descriptions = parse_descriptions(reply, ids)
+    if len(descriptions) < len(ids):
+        print(f'WARNING: the model described {len(descriptions)} of {len(ids)} blocks — '
+              f'the rest use descriptions built from the data', file=sys.stderr)
+    summary = render_summary(day, descriptions)
+
     try:
         saved_path = _save_summary(target, summary, Path(Config.SUMMARIES_DIR))
         print(f'Saved:     {saved_path}\n')
@@ -494,7 +596,19 @@ if __name__ == '__main__':
         action='store_true',
         help='Print the prompt and exit without calling any model',
     )
+    parser.add_argument(
+        '--no-llm',
+        action='store_true',
+        help='Print the summary with descriptions built from the data — no model call, nothing saved',
+    )
+    parser.add_argument(
+        '--log-dir',
+        type=Path,
+        default=None,
+        help='Read the daily log from this directory instead of the configured one',
+    )
     args = parser.parse_args()
 
-    ok = summarize(target=args.date, backend=args.backend, print_prompt=args.print_prompt)
+    ok = summarize(target=args.date, log_dir=args.log_dir, backend=args.backend,
+                   print_prompt=args.print_prompt, no_llm=args.no_llm)
     sys.exit(0 if ok else 1)

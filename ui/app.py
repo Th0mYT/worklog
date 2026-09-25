@@ -11,15 +11,24 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+import tomllib
+from collections import Counter
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import webview
 
 _ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_ROOT))
-from config import Config, _normalize_categories, _normalize_commesse  # noqa: E402
-from logger.activity_poller import _system_idle_seconds  # noqa: E402
+from config import (  # noqa: E402
+    Config, _clean_domain, _normalize_browser_rules, _normalize_categories, _normalize_commesse, _string_list,
+)
+from logger import pause as _pause  # noqa: E402
+from logger.activity_poller import _system_idle_seconds, run_loop  # noqa: E402
+from logger.extractors import classify_domain, domain_of  # noqa: E402
+from logger.logio import LOG_LOCK, rewrite_atomic  # noqa: E402
+from logger.timeutil import entry_time, parse_ts  # noqa: E402
+from logger.window_info import health as _capture_health, open_accessibility_settings  # noqa: E402
 
 _CONFIG_PATH = Path.home() / '.worklog' / 'config.toml'
 
@@ -352,6 +361,16 @@ _HTML = """<!DOCTYPE html>
 
     .meta { font-size: 12px; color: var(--text-sec); margin-top: 5px; line-height: 1.5; }
 
+    /* ── capture-health banner ── */
+    .banner {
+      border: 1px solid rgba(255,149,0,.55);
+      background: rgba(255,149,0,.12);
+      font-size: 12px;
+      line-height: 1.5;
+      flex-shrink: 0;
+    }
+    .banner .btn-row { margin-top: 8px; }
+
     /* ── buttons ── */
     .btn-row {
       display: flex;
@@ -518,6 +537,39 @@ _HTML = """<!DOCTYPE html>
       position: relative;
     }
     .detail-entry:last-child { border-bottom: none; }
+    .detail-entry.is-excluded { opacity: .5; }
+    .detail-entry.marker-row { opacity: .65; padding: 2px 0; }
+    .detail-entry .entry-excl-btn {
+      opacity: 0;
+      flex-shrink: 0;
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--text-ter);
+      padding: 0 2px;
+      line-height: 1;
+      transition: opacity 0.15s, color 0.15s;
+      align-self: center;
+    }
+    .detail-entry:hover .entry-excl-btn, .detail-entry.is-excluded .entry-excl-btn { opacity: 1; }
+    .detail-entry .entry-excl-btn:hover { color: #ff9500; }
+    .site-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 3px; }
+    .site-btn {
+      padding: 1px 7px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 10.5px;
+      background: none;
+      color: var(--text-sec);
+    }
+    .site-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); filter: none; }
+    .pill-site-work     { color: #248a3d; background: rgba(52,199,89,.14); }
+    .pill-site-personal { color: #c93400; background: rgba(255,149,0,.14); }
+    .pill-site-unknown  { color: #8e8e93; background: rgba(142,142,147,.12); }
+    .unclassified-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 12px; }
+    .unclassified-row .uc-domain { flex: 1; min-width: 0; word-break: break-all; }
+    .unclassified-row .uc-count { color: var(--text-ter); font-size: 11px; }
     .detail-entry .entry-del {
       opacity: 0;
       flex-shrink: 0;
@@ -969,6 +1021,21 @@ _HTML = """<!DOCTYPE html>
       <div class="btn-row">
         <button class="btn-green" id="btn-start" onclick="startPoller()">Start</button>
         <button class="btn-red"   id="btn-stop"  onclick="stopPoller()">Stop</button>
+        <button class="btn-orange" id="btn-pause" onclick="togglePause()" title="Pause / resume tracking (⌘⇧P)">Pause</button>
+        <select class="inline" id="pause-for" title="How long to pause">
+          <option value="0">until resumed</option>
+          <option value="15">15 min</option>
+          <option value="30">30 min</option>
+          <option value="60">1 hour</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- capture health -->
+    <div class="card banner" id="health-banner" style="display:none">
+      <div id="health-text"></div>
+      <div class="btn-row" id="health-action">
+        <button class="btn-orange btn-sm" onclick="openAccessibility()">Open Accessibility settings</button>
       </div>
     </div>
 
@@ -1066,11 +1133,20 @@ _HTML = """<!DOCTYPE html>
           <div class="field-hint">Daily .jsonl files are written here</div>
         </div>
         <div class="field-group">
-          <label class="field-label" for="s-poll-interval">Poll Interval</label>
+          <label class="field-label" for="s-sample-interval">Sample Interval</label>
+          <div style="display:flex;align-items:center;gap:8px">
+            <input type="number" id="s-sample-interval" min="5" max="300" placeholder="20">
+            <span style="font-size:12px;color:var(--text-sec);white-space:nowrap">seconds</span>
+          </div>
+          <div class="field-hint">How often the frontmost window is checked; an entry is written only when it changes</div>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="s-poll-interval">Heartbeat</label>
           <div style="display:flex;align-items:center;gap:8px">
             <input type="number" id="s-poll-interval" min="30" max="3600" placeholder="300">
             <span style="font-size:12px;color:var(--text-sec);white-space:nowrap">seconds</span>
           </div>
+          <div class="field-hint">Write an entry at least this often, even if nothing changed</div>
         </div>
         <div class="field-group" style="margin-bottom:0">
           <label class="field-label" for="s-inactivity">Inactivity Timeout</label>
@@ -1079,6 +1155,45 @@ _HTML = """<!DOCTYPE html>
             <span style="font-size:12px;color:var(--text-sec);white-space:nowrap">seconds</span>
           </div>
           <div class="field-hint">Auto-pause after this many seconds of no keyboard/mouse activity</div>
+        </div>
+      </div>
+
+      <!-- ── Browser & privacy ── -->
+      <div class="card">
+        <div class="section-title">Browser &amp; privacy</div>
+        <div class="field-hint" style="margin-top:0;margin-bottom:10px">
+          Only pages on a <b>work</b> domain keep their title and URL (without query string) in the log and reach
+          the summary. Everything else is reduced to its domain, and private windows are not recorded at all.
+          Subdomains match (github.com covers gist.github.com).
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="s-br-work">Work domains</label>
+          <input type="text" id="s-br-work" placeholder="github.com, gitlab.com, localhost…">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="s-br-personal">Personal domains</label>
+          <input type="text" id="s-br-personal" placeholder="twitch.tv, netflix.com…">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="s-br-unknown">Sites in neither list</label>
+          <select id="s-br-unknown">
+            <option value="hide">Keep only the domain, leave out of the summary</option>
+            <option value="work">Count as work</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="s-ignore-apps">Ignored apps</label>
+          <input type="text" id="s-ignore-apps" placeholder="worklog, Spotify…">
+          <div class="field-hint">Never logged; the time spent in them is left out</div>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="s-redact-types">Hide window titles of</label>
+          <input type="text" id="s-redact-types" placeholder="communication">
+          <div class="field-hint">Categories whose window titles (chat names, mail subjects…) are never stored</div>
+        </div>
+        <div class="field-group" style="margin-bottom:0">
+          <label class="field-label">Recently seen, not classified yet</label>
+          <div id="unclassified-list"><p class="no-logs" style="margin:0">Loading…</p></div>
         </div>
       </div>
 
@@ -1453,6 +1568,52 @@ _HTML = """<!DOCTYPE html>
     return out;
   }
 
+  // ── browser rules helpers ────────────────────────────────────────────────────
+
+  function _csv(id) {
+    return (document.getElementById(id)?.value || '')
+      .split(',').map(x => x.trim()).filter(Boolean);
+  }
+
+  // Settings screen: classifying only edits the form (persisted by Save), so it
+  // can't be overwritten by — or overwrite — other unsaved edits.
+  function classifyInForm(domain, side) {
+    const other = side === 'work' ? 'personal' : 'work';
+    const target = document.getElementById(side === 'work' ? 's-br-work' : 's-br-personal');
+    const opposite = document.getElementById(other === 'work' ? 's-br-work' : 's-br-personal');
+    opposite.value = _csv(opposite.id).filter(d => d !== domain).join(', ');
+    const list = _csv(target.id);
+    if (!list.includes(domain)) list.push(domain);
+    target.value = list.join(', ');
+    loadUnclassified(domain);
+    showToast(domain + ' → ' + side + ' — Save to keep', 'ok');
+  }
+
+  let _hiddenUnclassified = [];
+
+  async function loadUnclassified(justClassified) {
+    const box = document.getElementById('unclassified-list');
+    if (!box) return;
+    if (justClassified) _hiddenUnclassified.push(justClassified); else _hiddenUnclassified = [];
+    try {
+      const r = await api.unclassified_domains(14);
+      const rows = (r.domains || []).filter(d => !_hiddenUnclassified.includes(d.domain));
+      box.innerHTML = rows.length
+        ? rows.map(d => {
+            const dom = _esc(d.domain);
+            return '<div class="unclassified-row">' +
+              '<span class="uc-domain">' + dom + '</span>' +
+              '<span class="uc-count">' + d.count + '×</span>' +
+              '<button class="site-btn" onclick="classifyInForm(\\'' + dom + '\\',\\'work\\')">work</button>' +
+              '<button class="site-btn" onclick="classifyInForm(\\'' + dom + '\\',\\'personal\\')">personal</button>' +
+            '</div>';
+          }).join('')
+        : '<p class="no-logs" style="margin:0">Nothing to classify.</p>';
+    } catch (e) {
+      box.innerHTML = '<p class="no-logs" style="margin:0">Could not load.</p>';
+    }
+  }
+
   // ── view navigation ─────────────────────────────────────────────────────────
 
   async function showSettings(onboarding) {
@@ -1463,7 +1624,15 @@ _HTML = """<!DOCTYPE html>
     const s = await api.get_settings();
     document.getElementById('s-logs-dir').value      = s.logs_dir || '';
     document.getElementById('s-poll-interval').value = s.poll_interval || 300;
+    document.getElementById('s-sample-interval').value = s.sample_interval || 20;
     document.getElementById('s-inactivity').value    = s.inactivity_timeout || 300;
+    const rules = s.browser_rules || {};
+    document.getElementById('s-br-work').value       = (rules.work || []).join(', ');
+    document.getElementById('s-br-personal').value   = (rules.personal || []).join(', ');
+    document.getElementById('s-br-unknown').value    = s.browser_unknown || 'hide';
+    document.getElementById('s-ignore-apps').value   = (s.ignore_apps || []).join(', ');
+    document.getElementById('s-redact-types').value  = (s.redact_title_types || []).join(', ');
+    loadUnclassified();
     document.getElementById('s-git-author').value = s.git_author || '';
     document.getElementById('repo-list').innerHTML = '';
     const gitPaths = s.git_paths || [];
@@ -1520,7 +1689,15 @@ _HTML = """<!DOCTYPE html>
         await api.save_settings({
           logs_dir:             document.getElementById('s-logs-dir').value.trim(),
           poll_interval:        parseInt(document.getElementById('s-poll-interval').value) || 300,
+          sample_interval:      parseInt(document.getElementById('s-sample-interval').value) || 20,
           inactivity_timeout:   parseInt(document.getElementById('s-inactivity').value) || 300,
+          browser_rules: {
+            work:     _csv('s-br-work'),
+            personal: _csv('s-br-personal'),
+          },
+          browser_unknown:      document.getElementById('s-br-unknown').value,
+          ignore_apps:          _csv('s-ignore-apps'),
+          redact_title_types:   _csv('s-redact-types'),
           git_author:         document.getElementById('s-git-author').value.trim(),
           git_paths:          getPaths(),
           categories:         getCategories(),
@@ -1550,13 +1727,30 @@ _HTML = """<!DOCTYPE html>
       const [s, l] = await Promise.all([api.status(), api.logs()]);
 
       const isAutoPaused = s.auto_paused;
+      const isPaused = !!s.paused;
       document.getElementById('dot').className =
-        'dot' + (s.running ? ' on' : isAutoPaused ? ' paused' : '');
+        'dot' + (s.running && !isPaused ? ' on' : (isAutoPaused || isPaused) ? ' paused' : '');
       document.getElementById('status-text').textContent =
-        s.running ? 'Active' : (isAutoPaused ? 'Paused' : 'Stopped');
+        isPaused ? 'Paused' : s.running ? 'Active' : (isAutoPaused ? 'Paused' : 'Stopped');
+
+      const banner = document.getElementById('health-banner');
+      if (s.capture_problem) {
+        document.getElementById('health-text').textContent = s.capture_problem;
+        document.getElementById('health-action').style.display = /Accessibility/.test(s.capture_problem) ? '' : 'none';
+        banner.style.display = '';
+      } else {
+        banner.style.display = 'none';
+      }
+      const pauseBtn = document.getElementById('btn-pause');
+      pauseBtn.textContent = isPaused ? 'Resume' : 'Pause';
+      pauseBtn.disabled = !s.running && !isPaused;
+      document.getElementById('pause-for').style.display = isPaused ? 'none' : '';
 
       let metaText;
-      if (s.running) {
+      if (isPaused) {
+        metaText = 'Tracking is off' +
+          (s.paused_until ? ' until ' + s.paused_until.slice(11, 16) : ' · resume when ready');
+      } else if (s.running) {
         const remaining = s.inactivity_timeout - s.idle_seconds;
         if (remaining <= 60) {
           metaText = 'Idle · pausing in ' + Math.max(0, remaining) + 's';
@@ -1624,6 +1818,32 @@ _HTML = """<!DOCTYPE html>
     });
   }
 
+  async function togglePause() {
+    try {
+      const s = await api.status();
+      if (s.paused) {
+        await api.resume_tracking();
+        showToast('Tracking resumed', 'ok');
+      } else {
+        const minutes = parseInt(document.getElementById('pause-for').value) || 0;
+        await api.pause_tracking(minutes);
+        showToast(minutes ? 'Tracking paused for ' + minutes + ' min' : 'Tracking paused');
+      }
+      await refresh();
+    } catch (e) { showToast('Could not change pause state', 'error'); }
+  }
+
+  async function openAccessibility() {
+    try { await api.open_accessibility(); } catch (e) {}
+  }
+
+  document.addEventListener('keydown', ev => {
+    if ((ev.metaKey || ev.ctrlKey) && ev.shiftKey && ev.key.toLowerCase() === 'p') {
+      ev.preventDefault();
+      if (api) togglePause();
+    }
+  });
+
   async function resetToday() {
     if (!confirm("Delete today's log?")) return;
     await withBtn('btn-reset', 'Deleting…', async () => {
@@ -1670,7 +1890,7 @@ _HTML = """<!DOCTYPE html>
   }
 
   function _esc(s) {
-    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
   function _buildSummaryHtml(text) {
@@ -1873,15 +2093,15 @@ _HTML = """<!DOCTYPE html>
 
   let _editingTagsTs = null;
 
-  function _delBtn(ts, date) {
+  function _delBtn(ts, date, isGit) {
     const safeTs   = ts.replace(/"/g, '&quot;');
     const safeDate = date.replace(/"/g, '&quot;');
-    return `<button class="entry-del" title="Delete entry" onclick="deleteEntry('${safeDate}','${safeTs}')">×</button>`;
+    return `<button class="entry-del" title="Delete entry" onclick="deleteEntry('${safeDate}','${safeTs}',${!!isGit})">×</button>`;
   }
 
-  function _tagBtn(ts) {
+  function _tagBtn(ts, isGit) {
     const safeTs = ts.replace(/"/g, '&quot;');
-    return `<button class="entry-tag-btn" title="Edit project tags" onclick="editEntryTags('${safeTs}')">🏷</button>`;
+    return `<button class="entry-tag-btn" title="Edit project tags" onclick="editEntryTags('${safeTs}',${!!isGit})">🏷</button>`;
   }
 
   function _tagsSection(e, date) {
@@ -1894,7 +2114,7 @@ _HTML = """<!DOCTYPE html>
         '<div class="tag-edit-row">' +
           `<input type="text" class="repo-tags" id="tag-edit-input" list="tag-suggestions" ` +
             `placeholder="project tags: libertas-backend, backend…" value="${current}">` +
-          `<button class="btn-blue" onclick="saveEntryTags('${safeDate}','${safeTs}')">Save</button>` +
+          `<button class="btn-blue" onclick="saveEntryTags('${safeDate}','${safeTs}',${e.source === 'git'})">Save</button>` +
           `<button class="btn-gray" onclick="cancelEditTags()">Cancel</button>` +
         '</div>'
       );
@@ -1905,21 +2125,68 @@ _HTML = """<!DOCTYPE html>
       : '';
   }
 
+  const _MARKER_LABEL = {
+    idle_start: 'idle — no keyboard/mouse activity', idle_end: 'back at the keyboard',
+    pause: 'tracking paused', resume: 'tracking resumed',
+    stop: 'poller stopped', start: 'poller started',
+  };
+
+  // An entry can be left out of every summary with one click (and brought back).
+  // Automatic exclusions (private window, ignored app) carry no data to restore,
+  // so they get no toggle.
+  function _exclBtn(e, date) {
+    if (e.excluded && e.reason && e.reason !== 'marked-personal') return '';
+    const ts = (e.ts || '').replace(/"/g, '&quot;');
+    const d  = date.replace(/"/g, '&quot;');
+    const title = e.excluded ? 'Include in summaries again' : 'Mark as personal — leave out of summaries';
+    return `<button class="entry-excl-btn" title="${title}" onclick="toggleExcluded('${d}','${ts}',${!e.excluded},${e.source === 'git'})">` +
+           (e.excluded ? '↩' : '🚫') + '</button>';
+  }
+
+  function _siteRow(e) {
+    if (e.type !== 'browser' || !e.domain) return '';
+    const cls = e.site_class || 'unknown';
+    const dom = _esc(e.domain);
+    const btn = (side, label) => cls === side ? '' :
+      `<button class="site-btn" onclick="classifyDomainNow('${dom}','${side}')">${label}</button>`;
+    return '<div class="site-row">' +
+      `<span class="type-pill pill-site-${cls}">${dom} · ${cls}</span>` +
+      btn('work', '→ work') + btn('personal', '→ personal') +
+    '</div>';
+  }
+
+  function _excludedLabel(e) {
+    if (!e.excluded) return '';
+    const why = {
+      'private': 'private window — nothing recorded', 'ignored-app': 'ignored app',
+      'marked-personal': 'marked as personal',
+    }[e.reason || 'marked-personal'] || 'excluded';
+    return `<div class="detail-sub">⊘ left out of summaries (${why})</div>`;
+  }
+
   function renderDetailEntry(e, date) {
     const time = (e.ts || '').slice(11, 16);
+    if (e.marker) {
+      return '<div class="detail-entry marker-row">' +
+        `<span class="detail-time">${time}</span>` +
+        `<span class="detail-text detail-sub">— ${_esc(_MARKER_LABEL[e.marker] || e.marker)}</span>` +
+      '</div>';
+    }
     if (e.source === 'git') {
       const stats = `+${e.insertions||0}/-${e.deletions||0} in ${e.files_changed||0} file(s)`;
       return (
-        '<div class="detail-entry">' +
+        `<div class="detail-entry${e.excluded ? ' is-excluded' : ''}">` +
           `<span class="detail-time">${time}</span>` +
           `<span class="type-pill pill-git" style="flex-shrink:0">git</span>` +
           '<span class="detail-text">' +
-            `<div>${e.repo ? '[' + e.repo + '] ' : ''}${e.message || ''}</div>` +
-            `<div class="detail-stats">${stats}</div>` +
+            `<div>${e.repo ? '[' + _esc(e.repo) + '] ' : ''}${_esc(e.message || '')}</div>` +
+            `<div class="detail-stats">${stats}${e.branch ? ' · ' + _esc(e.branch) : ''}</div>` +
+            _excludedLabel(e) +
             _tagsSection(e, date) +
           '</span>' +
-          _tagBtn(e.ts || '') +
-          _delBtn(e.ts || '', date) +
+          _exclBtn(e, date) +
+          _tagBtn(e.ts || '', true) +
+          _delBtn(e.ts || '', date, true) +
         '</div>'
       );
     }
@@ -1928,33 +2195,52 @@ _HTML = """<!DOCTYPE html>
     const win      = e.tab_title || e.window || '';
     const url      = e.url || '';
     const note     = e.note || '';
+    const project  = e.project ? e.project + (e.file ? ' › ' + e.file : '') : '';
     const endTime  = e.end_ts ? e.end_ts.slice(11, 16) : '';
     const timeText = endTime ? `${time}–${endTime}` : time;
     return (
-      '<div class="detail-entry">' +
+      `<div class="detail-entry${e.excluded ? ' is-excluded' : ''}">` +
         `<span class="detail-time">${timeText}</span>` +
-        `<span class="type-pill ${cls}" style="flex-shrink:0">${e.type||'other'}</span>` +
+        `<span class="type-pill ${cls}" style="flex-shrink:0">${_esc(e.type||'other')}</span>` +
         '<span class="detail-text">' +
           `<div>${_esc(app)}</div>` +
-          (win ? `<div class="detail-sub">${win}</div>` : '') +
-          (url ? `<div class="detail-sub" style="-webkit-user-select:text;user-select:text">${url}</div>` : '') +
+          (project ? `<div class="detail-sub">${_esc(project)}${e.branch ? ' · ' + _esc(e.branch) : ''}</div>` : '') +
+          (win ? `<div class="detail-sub">${_esc(win)}</div>` : '') +
+          (url ? `<div class="detail-sub" style="-webkit-user-select:text;user-select:text">${_esc(url)}</div>` : '') +
           (note ? `<div class="detail-sub">${_esc(note)}</div>` : '') +
+          _siteRow(e) +
+          _excludedLabel(e) +
           _tagsSection(e, date) +
         '</span>' +
-        _tagBtn(e.ts || '') +
-        _delBtn(e.ts || '', date) +
+        _exclBtn(e, date) +
+        _tagBtn(e.ts || '', false) +
+        _delBtn(e.ts || '', date, false) +
       '</div>'
     );
   }
 
-  async function deleteEntry(date, ts) {
-    const r = await api.delete_entry(date, ts);
+  async function toggleExcluded(date, ts, excluded, isGit) {
+    const r = await api.set_entry_excluded(date, ts, excluded, isGit);
+    if (!r || !r.ok) { showToast('Failed to update entry', 'error'); return; }
+    await showLogDetail(date, true);
+    showToast(excluded ? 'Marked as personal — left out of summaries' : 'Included again', 'ok');
+  }
+
+  async function classifyDomainNow(domain, side) {
+    const r = await api.classify_domain_rule(domain, side);
+    if (!r || !r.ok) { showToast((r && r.error) || 'Failed to save rule', 'error'); return; }
+    await showLogDetail(_detailDate, true);
+    showToast(domain + ' → ' + side, 'ok');
+  }
+
+  async function deleteEntry(date, ts, isGit) {
+    const r = await api.delete_entry(date, ts, isGit);
     if (!r.ok) { showToast('Failed to delete entry', 'error'); return; }
     await showLogDetail(date);
     showToast('Entry deleted');
   }
 
-  function editEntryTags(ts) {
+  function editEntryTags(ts, isGit) {
     _editingTagsTs = ts;
     showLogDetail(_detailDate, true);
   }
@@ -1964,10 +2250,10 @@ _HTML = """<!DOCTYPE html>
     showLogDetail(_detailDate, true);
   }
 
-  async function saveEntryTags(date, ts) {
+  async function saveEntryTags(date, ts, isGit) {
     const input = document.getElementById('tag-edit-input');
     const tags = input ? input.value : '';
-    const r = await api.set_entry_tags(date, ts, tags);
+    const r = await api.set_entry_tags(date, ts, tags, isGit);
     if (!r || !r.ok) { showToast((r && r.error) || 'Failed to save tags', 'error'); return; }
     _editingTagsTs = null;
     await showLogDetail(date, true);
@@ -2079,13 +2365,25 @@ def _toml_str(s: str) -> str:
     return '"' + str(s).replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
+def _toml_list(items) -> str:
+    return '[' + ', '.join(_toml_str(i) for i in items) + ']'
+
+
 def _build_toml(d: dict) -> str:
     lines = [
         f'logs_dir = {_toml_str(d["logs_dir"])}',
         f'poll_interval = {int(d["poll_interval"])}',
+        f'sample_interval = {int(d["sample_interval"])}',
         f'inactivity_timeout = {int(d["inactivity_timeout"])}',
         f'git_author = {_toml_str(d["git_author"])}',
+        f'ignore_apps = {_toml_list(d["ignore_apps"])}',
+        f'redact_title_types = {_toml_list(d["redact_title_types"])}',
+        f'browser_unknown = {_toml_str(d["browser_unknown"])}',
     ]
+    # Keys this UI has no field for must survive a save instead of being wiped.
+    for key in ('summaries_dir', 'anthropic_api_key', 'anthropic_model'):
+        if d.get(key):
+            lines.append(f'{key} = {_toml_str(d[key])}')
     repos = d.get('git_repos') or []
     if repos:
         lines.append('git_repos = [')
@@ -2132,6 +2430,13 @@ def _build_toml(d: dict) -> str:
             apps_str = '[' + ', '.join(_toml_str(a) for a in apps) + ']'
             lines.append(f'{_toml_str(name)} = {apps_str}')
 
+    rules = d.get('browser_rules') or {}
+    if rules:
+        lines.append('')
+        lines.append('[browser_rules]')
+        lines.append(f'work = {_toml_list(rules.get("work", []))}')
+        lines.append(f'personal = {_toml_list(rules.get("personal", []))}')
+
     # [[commesse]] is an array-of-tables — each entry is its own header, and
     # (like [git_tags]/[categories]) it must come after all plain key=value lines.
     commesse = d.get('commesse') or []
@@ -2149,7 +2454,7 @@ def _build_toml(d: dict) -> str:
 # ── In-process poller thread ──────────────────────────────────────────────────
 
 class _PollThread(threading.Thread):
-    """Runs poll_once() in a background thread — no subprocess, full app permissions."""
+    """Runs the tracking loop in a background thread — no subprocess, full app permissions."""
 
     def __init__(self) -> None:
         super().__init__(daemon=True)
@@ -2159,28 +2464,26 @@ class _PollThread(threading.Thread):
         self._stop_event.set()
 
     def run(self) -> None:
-        from logger.activity_poller import poll_once, _build_tag_index
-        log_dir = Path(Config.LOGS_DIR)
-        tag_index = _build_tag_index()
-        was_idle = False
         print('[worklog] poller thread started', flush=True)
-        while not self._stop_event.is_set():
-            idle = _system_idle_seconds() > Config.INACTIVITY_TIMEOUT
-            if idle:
-                if not was_idle:
-                    was_idle = True
-                    print('[worklog] idle — poller pausing', flush=True)
-                self._stop_event.wait(10)
-                continue
-            if was_idle:
-                was_idle = False
-                print('[worklog] activity resumed', flush=True)
-            try:
-                poll_once(log_dir, tag_index)
-            except Exception as e:
-                print(f'[worklog] poll error: {e}', file=sys.stderr, flush=True)
-            self._stop_event.wait(Config.POLL_INTERVAL)
+        try:
+            run_loop(self._stop_event, Path(Config.LOGS_DIR))
+        except Exception as e:
+            print(f'[worklog] poller crashed: {e}', file=sys.stderr, flush=True)
         print('[worklog] poller thread stopped', flush=True)
+
+
+def _config_file() -> dict:
+    try:
+        return tomllib.loads(_CONFIG_PATH.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
+
+def _preserved_keys() -> dict:
+    """Config keys the settings screen has no field for; carried over so a save doesn't wipe them."""
+    existing = _config_file()
+    return {k: existing[k] for k in ('summaries_dir', 'anthropic_api_key', 'anthropic_model')
+            if isinstance(existing.get(k), str) and existing[k]}
 
 
 # ── Python API exposed to JS ──────────────────────────────────────────────────
@@ -2196,6 +2499,7 @@ class _API:
         self._summary_lines: list[str] = []
         self._summary_lock = threading.Lock()
         self._summary_started_at: float = 0.0
+        self._scan_cache: dict[Path, tuple[tuple[int, int], dict]] = {}
         threading.Thread(target=self._auto_manager, daemon=True).start()
         if _CONFIG_PATH.exists():
             self._start_process()
@@ -2216,7 +2520,12 @@ class _API:
         return {
             'logs_dir':             Config.LOGS_DIR,
             'poll_interval':        Config.POLL_INTERVAL,
+            'sample_interval':      Config.SAMPLE_INTERVAL,
             'inactivity_timeout':   Config.INACTIVITY_TIMEOUT,
+            'ignore_apps':          list(Config.IGNORE_APPS),
+            'redact_title_types':   list(Config.REDACT_TITLE_TYPES),
+            'browser_unknown':      Config.BROWSER_UNKNOWN,
+            'browser_rules':        {k: list(v) for k, v in Config.BROWSER_RULES.items()},
             'git_author':           Config.GIT_AUTHOR,
             'git_paths':          paths,
             'categories':         {k: list(v) for k, v in Config.CATEGORIES.items()},
@@ -2240,11 +2549,17 @@ class _API:
         categories = _normalize_categories(data.get('categories'))
         commesse   = _normalize_commesse(data.get('commesse'))
         payload = {
+            **_preserved_keys(),
             'categories':           categories,
             'commesse':             commesse,
             'logs_dir':             data.get('logs_dir', '~/.worklog/logs'),
             'poll_interval':        int(data.get('poll_interval', 300)),
+            'sample_interval':      max(5, int(data.get('sample_interval', 20))),
             'inactivity_timeout':   int(data.get('inactivity_timeout', 300)),
+            'ignore_apps':          _string_list(data.get('ignore_apps'), Config.IGNORE_APPS),
+            'redact_title_types':   _string_list(data.get('redact_title_types'), Config.REDACT_TITLE_TYPES),
+            'browser_unknown':      'work' if data.get('browser_unknown') == 'work' else 'hide',
+            'browser_rules':        _normalize_browser_rules(data.get('browser_rules')),
             'git_author':           data.get('git_author', ''),
             'git_repos':          repos,
             'git_workspaces':     workspaces,
@@ -2264,7 +2579,12 @@ class _API:
         Config.COMMESSE             = commesse
         Config.LOGS_DIR             = str(Path(payload['logs_dir']).expanduser())
         Config.POLL_INTERVAL        = payload['poll_interval']
+        Config.SAMPLE_INTERVAL      = payload['sample_interval']
         Config.INACTIVITY_TIMEOUT   = payload['inactivity_timeout']
+        Config.IGNORE_APPS          = payload['ignore_apps']
+        Config.REDACT_TITLE_TYPES   = payload['redact_title_types']
+        Config.BROWSER_UNKNOWN      = payload['browser_unknown']
+        Config.BROWSER_RULES        = payload['browser_rules']
         Config.GIT_AUTHOR         = payload['git_author']
         Config.GIT_REPOS          = repos
         Config.GIT_WORKSPACES     = workspaces
@@ -2338,8 +2658,13 @@ class _API:
             self._poller_started_at = time.time()
 
     def _stop_process(self) -> None:
-        if self._poller and self._poller.is_alive():
-            self._poller.stop()
+        poller = self._poller
+        if poller and poller.is_alive():
+            poller.stop()
+            # Let it finish (an AppleScript call can take a few seconds) so its
+            # closing 'stop' marker can't land after a new poller's 'start'.
+            if poller is not threading.current_thread():
+                poller.join(timeout=8)
             self._poller = None
 
     def start(self) -> dict:
@@ -2363,6 +2688,7 @@ class _API:
     def status(self) -> dict:
         running = self._poller is not None and self._poller.is_alive()
         last_ts, count = self._today_stats()
+        paused = _pause.pause_state()
         return {
             "running": running,
             "last_ts": last_ts,
@@ -2370,9 +2696,62 @@ class _API:
             "idle_seconds": round(self._cached_idle),
             "inactivity_timeout": Config.INACTIVITY_TIMEOUT,
             "auto_paused": self._was_idle_stop,
+            "paused": paused["paused"],
+            "paused_until": paused["until"],
+            "capture_problem": _capture_health()["problem"],
         }
 
     # ── log list ──────────────────────────────────────────────────────────────
+
+    def _scan_log(self, f: Path) -> dict:
+        """Per-file stats for the log list, cached until the file changes.
+
+        The list refreshes every second and the poller now writes far more
+        often, so re-parsing every log ever written each time is not an option.
+        """
+        try:
+            st = f.stat()
+        except OSError:
+            return {'count': 0, 'git_count': 0, 'types': {}, 'first': None, 'last': None, 'last_raw': ''}
+        key = (st.st_mtime_ns, st.st_size)
+        cached = self._scan_cache.get(f)
+        if cached and cached[0] == key:
+            return cached[1]
+
+        types: dict[str, int] = {}
+        git_count = count = 0
+        first = last = None
+        last_raw = ''
+        try:
+            lines = f.read_text().splitlines()
+        except OSError:
+            lines = []
+        for ln in lines:
+            if not ln.strip():
+                continue
+            try:
+                e = json.loads(ln)
+            except json.JSONDecodeError:
+                continue
+            if e.get('marker'):
+                continue
+            count += 1
+            if e.get('source') == 'git':
+                git_count += 1
+                types['git'] = types.get('git', 0) + 1
+            else:
+                t = e.get('type', 'other')
+                types[t] = types.get(t, 0) + 1
+            when = parse_ts(e.get('ts'))
+            if when:
+                if first is None or when < first:
+                    first = when
+                if last is None or when > last:
+                    last, last_raw = when, e['ts']
+        stats = {'count': count, 'git_count': git_count, 'types': types,
+                 'first': first, 'last': last, 'last_raw': last_raw}
+        self._scan_cache[f] = (key, stats)
+        return stats
 
     def logs(self) -> dict:
         log_dir = Path(Config.LOGS_DIR)
@@ -2380,42 +2759,15 @@ class _API:
         files = sorted(log_dir.glob("*.jsonl"), reverse=True) if log_dir.exists() else []
         result = []
         for f in files:
-            types: dict[str, int] = {}
-            git_count = 0
-            first_ts = ''
-            last_ts = ''
-            count = 0
-            try:
-                for ln in f.read_text().splitlines():
-                    if not ln.strip():
-                        continue
-                    try:
-                        e = json.loads(ln)
-                    except json.JSONDecodeError:
-                        continue
-                    count += 1
-                    if e.get('source') == 'git':
-                        git_count += 1
-                        types['git'] = types.get('git', 0) + 1
-                    else:
-                        t = e.get('type', 'other')
-                        types[t] = types.get(t, 0) + 1
-                    ts = e.get('ts', '')
-                    if ts:
-                        if not first_ts or ts < first_ts:
-                            first_ts = ts
-                        if not last_ts or ts > last_ts:
-                            last_ts = ts
-            except OSError:
-                pass
+            st = self._scan_log(f)
             result.append({
                 "date": f.stem,
-                "count": count,
+                "count": st['count'],
                 "today": f.stem == today,
-                "types": types,
-                "git_count": git_count,
-                "first_ts": first_ts[11:16] if first_ts else '',
-                "last_ts": last_ts[11:16] if last_ts else '',
+                "types": st['types'],
+                "git_count": st['git_count'],
+                "first_ts": st['first'].strftime('%H:%M') if st['first'] else '',
+                "last_ts": st['last'].strftime('%H:%M') if st['last'] else '',
             })
         return {"logs": result}
 
@@ -2434,30 +2786,42 @@ class _API:
                             pass
             except OSError:
                 pass
-        entries.sort(key=lambda e: e.get('ts', ''))
+        entries.sort(key=entry_time)
+        for e in entries:
+            if e.get('type') == 'browser' and not e.get('excluded'):
+                domain = e.get('domain') or domain_of(e.get('url', ''))
+                if domain:  # judged by today's rules, so a fresh classification shows up right away
+                    e['domain'] = domain
+                    e['site_class'] = classify_domain(domain, Config.BROWSER_RULES)
         return {"date": date, "entries": entries}
 
-    def delete_entry(self, date: str, ts: str) -> dict:
+    @staticmethod
+    def _is_target(entry: dict, ts: str, git: bool | None) -> bool:
+        """Entries are addressed by timestamp; `git` disambiguates a commit from a poller entry in the same second."""
+        if entry.get('ts') != ts or entry.get('marker'):
+            return False
+        return git is None or (entry.get('source') == 'git') == git
+
+    def delete_entry(self, date: str, ts: str, git: bool | None = None) -> dict:
         f = Path(Config.LOGS_DIR) / f"{date}.jsonl"
-        if not f.exists():
-            return {"ok": False}
         try:
-            lines = f.read_text().splitlines()
-            kept = []
-            removed = False
-            for line in lines:
-                if not line.strip():
-                    continue
-                if not removed:
-                    try:
-                        entry = json.loads(line)
-                        if entry.get('ts') == ts:
-                            removed = True
-                            continue
-                    except json.JSONDecodeError:
-                        pass
-                kept.append(line)
-            f.write_text('\n'.join(kept) + ('\n' if kept else ''))
+            with LOG_LOCK:
+                if not f.exists():
+                    return {"ok": False}
+                kept = []
+                removed = False
+                for line in f.read_text().splitlines():
+                    if not line.strip():
+                        continue
+                    if not removed:
+                        try:
+                            if self._is_target(json.loads(line), ts, git):
+                                removed = True
+                                continue
+                        except json.JSONDecodeError:
+                            pass
+                    kept.append(line)
+                rewrite_atomic(f, '\n'.join(kept) + ('\n' if kept else ''))
             return {"ok": removed}
         except OSError as exc:
             return {"ok": False, "error": str(exc)}
@@ -2480,7 +2844,7 @@ class _API:
                     tags.append(t)
         return {"tags": sorted(tags, key=str.lower)}
 
-    def set_entry_tags(self, date: str, ts: str, tags: str) -> dict:
+    def set_entry_tags(self, date: str, ts: str, tags: str, git: bool | None = None) -> dict:
         """Set (or clear) the free-text project tags on an existing entry.
 
         `tags` is a comma-separated string, cleaned into a deduped list and
@@ -2498,37 +2862,119 @@ class _API:
                 seen.add(t.lower())
                 cleaned.append(t)
 
+        def apply(entry: dict) -> None:
+            if cleaned:
+                entry['tags'] = cleaned
+            else:
+                entry.pop('tags', None)
+
+        result = self._update_entry(date, ts, apply, git)
+        if result.get('ok'):
+            result['tags'] = cleaned
+        return result
+
+    def set_entry_excluded(self, date: str, ts: str, excluded: bool, git: bool | None = None) -> dict:
+        """Mark an entry as personal (left out of every summary) or bring it back.
+
+        The entry stays in the log — it is only flagged, so the change is reversible.
+        """
+        def apply(entry: dict) -> None:
+            if excluded:
+                entry['excluded'] = True
+                entry.setdefault('reason', 'marked-personal')
+            else:
+                entry.pop('excluded', None)
+                if entry.get('reason') == 'marked-personal':
+                    entry.pop('reason', None)
+
+        return self._update_entry(date, ts, apply, git)
+
+    def _update_entry(self, date: str, ts: str, mutate, git: bool | None = None) -> dict:
+        """Apply mutate(entry) to the first non-marker entry with this timestamp and rewrite the file."""
         f = Path(Config.LOGS_DIR) / f"{date}.jsonl"
-        if not f.exists():
-            return {"ok": False}
         try:
-            lines = f.read_text().splitlines()
-            out = []
-            found = False
-            for line in lines:
-                if not line.strip():
-                    continue
+            with LOG_LOCK:  # the poller appends to this file; never rewrite it underneath it
+                if not f.exists():
+                    return {"ok": False}
+                out = []
+                found = False
+                for line in f.read_text().splitlines():
+                    if not line.strip():
+                        continue
+                    if not found:
+                        try:
+                            entry = json.loads(line)
+                        except json.JSONDecodeError:
+                            out.append(line)
+                            continue
+                        if self._is_target(entry, ts, git):
+                            found = True
+                            mutate(entry)
+                            out.append(json.dumps(entry))
+                            continue
+                    out.append(line)
                 if not found:
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        out.append(line)
-                        continue
-                    if entry.get('ts') == ts:
-                        found = True
-                        if cleaned:
-                            entry['tags'] = cleaned
-                        else:
-                            entry.pop('tags', None)
-                        out.append(json.dumps(entry))
-                        continue
-                out.append(line)
-            if not found:
-                return {"ok": False}
-            f.write_text('\n'.join(out) + '\n')
-            return {"ok": True, "tags": cleaned}
+                    return {"ok": False}
+                rewrite_atomic(f, '\n'.join(out) + '\n')
+            return {"ok": True}
         except OSError as exc:
             return {"ok": False, "error": str(exc)}
+
+    # ── browser privacy rules ──────────────────────────────────────────────────
+
+    def classify_domain_rule(self, domain: str, cls: str) -> dict:
+        """Put `domain` in the work or personal list (cls='work'|'personal'), or clear it (cls='')."""
+        d = _clean_domain(domain)
+        if not d:
+            return {"ok": False, "error": "invalid domain"}
+        rules = {side: [x for x in Config.BROWSER_RULES.get(side, []) if x != d] for side in ('work', 'personal')}
+        if cls in ('work', 'personal'):
+            rules[cls].append(d)
+        settings = self.get_settings()
+        settings['browser_rules'] = rules
+        # get_settings() reports keys that come from the environment too; a rule
+        # change must not copy those secrets into config.toml.
+        on_disk = _config_file()
+        env_openai = Config.OPENAI_API_KEY
+        settings['openai_api_key'] = on_disk.get('openai_api_key', '')
+        try:
+            return self.save_settings(settings)
+        finally:
+            Config.OPENAI_API_KEY = env_openai
+
+    def unclassified_domains(self, days: int = 14) -> dict:
+        """Domains seen in the last `days` log files that match neither rule list, most frequent first."""
+        log_dir = Path(Config.LOGS_DIR)
+        files = sorted(log_dir.glob("*.jsonl"), reverse=True)[:max(1, int(days))] if log_dir.exists() else []
+        counts: Counter = Counter()
+        for f in files:
+            try:
+                lines = f.read_text().splitlines()
+            except OSError:
+                continue
+            for ln in lines:
+                try:
+                    e = json.loads(ln)
+                except json.JSONDecodeError:
+                    continue
+                if e.get('type') != 'browser' or e.get('excluded'):
+                    continue
+                d = e.get('domain') or domain_of(e.get('url', ''))
+                if d and classify_domain(d, Config.BROWSER_RULES) == 'unknown':
+                    counts[d] += 1
+        return {"domains": [{"domain": d, "count": n} for d, n in counts.most_common(30)]}
+
+    # ── pause + capture health ─────────────────────────────────────────────────
+
+    def pause_tracking(self, minutes: int = 0) -> dict:
+        return {"ok": True, **_pause.pause(max(0, int(minutes or 0)))}
+
+    def resume_tracking(self) -> dict:
+        return {"ok": True, **_pause.resume()}
+
+    def open_accessibility(self) -> dict:
+        open_accessibility_settings()
+        return {"ok": True}
 
     def get_categories(self) -> dict:
         """Category names available for a manual record (always includes 'other')."""
@@ -2715,18 +3161,8 @@ class _API:
         f = Path(Config.LOGS_DIR) / f"{datetime.now().strftime('%Y-%m-%d')}.jsonl"
         if not f.exists():
             return "", 0
-        try:
-            lines = [ln for ln in f.read_text().splitlines() if ln.strip()]
-            for line in reversed(lines):
-                try:
-                    entry = json.loads(line)
-                    if "ts" in entry:
-                        return entry["ts"], len(lines)
-                except json.JSONDecodeError:
-                    continue
-            return "", len(lines)
-        except OSError:
-            return "", 0
+        st = self._scan_log(f)
+        return st['last_raw'], st['count']
 
 
 # ── entry point ───────────────────────────────────────────────────────────────

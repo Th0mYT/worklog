@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-worklog-poll = "logger.activity_poller:run"
+worklog-poll = "logger.activity_poller:main"
 worklog-ui   = "ui.app:main"
 
 [build-system]

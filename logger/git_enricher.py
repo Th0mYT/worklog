@@ -4,16 +4,20 @@ and appends them to the daily JSONL log alongside activity-poller entries.
 
 Each entry written:
   {
-    "ts":            "2026-06-18T17:39:23+02:00",
+    "ts":            "2026-06-18T17:39:23",      # local time, no offset (see logger/timeutil.py)
     "source":        "git",
     "repo":          "my-api",
     "type":          "coding",
     "commit":        "3e2f2f17",
+    "branch":        "feature/KH-682-assignment",
     "message":       "feat(assignment): add event relation to member assignment controller",
     "files_changed": 1,
     "insertions":    1,
-    "deletions":     0
+    "deletions":     0,
+    "files":         ["src/assignment/controller.ts"]
   }
+
+Commits are read from every local branch, not just the checked-out one.
 
 Entries are deduplicated by commit hash so the enricher is safe to run
 multiple times for the same day.
@@ -25,13 +29,13 @@ Usage:
 """
 
 import json
-import re
 import subprocess
 import sys
 from datetime import date, datetime
 from pathlib import Path
 
 from config import Config
+from logger.timeutil import normalize_ts
 
 
 # ---------------------------------------------------------------------------
@@ -89,53 +93,71 @@ def _resolve_repos() -> list[tuple[str, list[str]]]:
     return repos
 
 
+_FIELD_SEP = '\x1f'
+_MAX_FILES = 10
+
+
+def _parse_commit_lines(raw: str) -> list[dict]:
+    """Parse `git log --format=%H<US>%cI<US>%S<US>%s` output into commit dicts."""
+    commits = []
+    for line in raw.splitlines():
+        parts = line.split(_FIELD_SEP, 3)
+        if len(parts) != 4:
+            continue
+        source = parts[2].strip()
+        for prefix in ('refs/heads/', 'refs/'):
+            if source.startswith(prefix):
+                source = source[len(prefix):]
+                break
+        commits.append({
+            'hash': parts[0].strip(),
+            'ts': normalize_ts(parts[1].strip()),
+            'branch': source,
+            'message': parts[3].strip(),
+        })
+    return commits
+
+
 def _commits_for_date(repo_path: str, target: date, author: str) -> list[dict]:
-    """Return a list of {hash, ts, message} for commits on target date."""
+    """Return a list of {hash, ts, branch, message} for commits on target date, on any local branch."""
     since = f'{target} 00:00:00'
     until = f'{target} 23:59:59'
 
     cmd_args = [
         'log',
+        '--branches',
+        '--source',
         f'--since={since}',
         f'--until={until}',
-        '--format=%H|%ai|%s',
+        f'--format=%H{_FIELD_SEP}%cI{_FIELD_SEP}%S{_FIELD_SEP}%s',
     ]
     if author:
         cmd_args.append(f'--author={author}')
 
     raw = _run_git(repo_path, *cmd_args)
-    if not raw:
-        return []
+    return _parse_commit_lines(raw) if raw else []
 
-    commits = []
+
+def _parse_numstat(raw: str) -> tuple[int, int, int, list[str]]:
+    """Parse `git show --numstat --format=` into (files_changed, insertions, deletions, paths)."""
+    files: list[str] = []
+    ins = dels = 0
     for line in raw.splitlines():
-        parts = line.split('|', 2)
-        if len(parts) == 3:
-            commits.append({
-                'hash': parts[0].strip(),
-                'ts': parts[1].strip(),
-                'message': parts[2].strip(),
-            })
-    return commits
+        cols = line.split('\t', 2)
+        if len(cols) != 3:
+            continue
+        # Binary files report '-' for both counts.
+        ins += int(cols[0]) if cols[0].isdigit() else 0
+        dels += int(cols[1]) if cols[1].isdigit() else 0
+        files.append(cols[2].strip())
+    return len(files), ins, dels, files
 
 
-def _commit_stats(repo_path: str, commit_hash: str) -> tuple[int, int, int]:
-    """Return (files_changed, insertions, deletions) for a single commit."""
-    raw = _run_git(repo_path, 'show', '--stat', '--format=', commit_hash)
-    for line in reversed(raw.splitlines()):
-        line = line.strip()
-        if 'changed' in line:
-            return (
-                _parse_int(line, r'(\d+)\s+file'),
-                _parse_int(line, r'(\d+)\s+insertion'),
-                _parse_int(line, r'(\d+)\s+deletion'),
-            )
-    return 0, 0, 0
-
-
-def _parse_int(text: str, pattern: str) -> int:
-    m = re.search(pattern, text)
-    return int(m.group(1)) if m else 0
+def _commit_details(repo_path: str, commit_hash: str) -> tuple[int, int, int, list[str]]:
+    """Return (files_changed, insertions, deletions, first paths) for a single commit."""
+    raw = _run_git(repo_path, 'show', '--numstat', '--format=', commit_hash)
+    changed, ins, dels, files = _parse_numstat(raw)
+    return changed, ins, dels, files[:_MAX_FILES]
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +215,7 @@ def enrich(target: date | None = None, log_dir: Path | None = None, dry_run: boo
             if short in existing:
                 continue
 
-            files, ins, dels = _commit_stats(repo_path, c['hash'])
+            changed, ins, dels, files = _commit_details(repo_path, c['hash'])
             entry: dict = {
                 'ts': c['ts'],
                 'source': 'git',
@@ -201,10 +223,14 @@ def enrich(target: date | None = None, log_dir: Path | None = None, dry_run: boo
                 'type': 'coding',
                 'commit': short,
                 'message': c['message'],
-                'files_changed': files,
+                'files_changed': changed,
                 'insertions': ins,
                 'deletions': dels,
             }
+            if c['branch']:
+                entry['branch'] = c['branch']
+            if files:
+                entry['files'] = files
             if tags:
                 entry['tags'] = tags
             new_entries.append(entry)

@@ -19,6 +19,7 @@ OPTIONS = {
         'Foundation',
         'Cocoa',
         'HIServices',
+        'ApplicationServices',
     ],
     'includes': [
         'config',
@@ -38,7 +39,13 @@ OPTIONS = {
         'NSHighResolutionCapable': True,
         'NSRequiresAquaSystemAppearance': False,
         'NSAccessibilityUsageDescription':
-            'worklog needs Accessibility access to track keyboard and mouse activity.',
+            'worklog needs Accessibility access to read the title of the window in front '
+            '(project, file, meeting name) so your daily summary can say what you worked on.',
+        # Without this key the bundled app cannot even ask for permission to read
+        # browser tabs / terminal working directories over AppleScript.
+        'NSAppleEventsUsageDescription':
+            'worklog reads the active browser tab and the working directory of your terminal '
+            'to label your activity. Private windows are never recorded.',
         'NSScreenRecordingUsageDescription':
             'worklog needs Screen Recording access to read active browser tab URLs.',
     },

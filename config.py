@@ -46,6 +46,24 @@ DEFAULT_CATEGORIES: dict[str, list[str]] = {
     ],
 }
 
+# ---------------------------------------------------------------------------
+# Browser privacy rules. Only pages on a `work` domain keep their title and
+# (query-less) URL in the log and reach the summarizer; everything else is
+# reduced to the bare domain — or dropped altogether for private windows.
+# Subdomains match (github.com covers gist.github.com). Editable from
+# Settings › Browser and persisted to the [browser_rules] table.
+# ---------------------------------------------------------------------------
+DEFAULT_BROWSER_RULES: dict[str, list[str]] = {
+    'work': [
+        'github.com', 'gitlab.com', 'bitbucket.org', 'atlassian.net', 'stackoverflow.com',
+        'developer.mozilla.org', 'localhost', '127.0.0.1',
+    ],
+    'personal': [
+        'twitch.tv', 'netflix.com', 'primevideo.com', 'facebook.com', 'instagram.com',
+        'tiktok.com', 'x.com', 'twitter.com', 'fandom.com',
+    ],
+}
+
 # Keywords that promote a 'meeting'-category app to type="meeting"
 MEETING_WINDOW_SIGNALS: list[str] = [
     'call', 'meeting', 'standup', 'voice', 'video', 'live', 'screen share',
@@ -109,6 +127,45 @@ def _normalize_commesse(raw) -> list[dict]:
     return result
 
 
+def _clean_domain(value) -> str:
+    """Reduce 'https://www.Example.com/path' (or 'example.com') to 'example.com'."""
+    d = str(value).strip().lower()
+    if '://' in d:
+        d = d.split('://', 1)[1]
+    d = d.split('/', 1)[0].split('?', 1)[0].split(':', 1)[0]
+    return d[4:] if d.startswith('www.') else d
+
+
+def _normalize_browser_rules(raw) -> dict[str, list[str]]:
+    """Coerce a user-supplied [browser_rules] table into {'work': [...], 'personal': [...]}.
+
+    Missing/malformed sides fall back to the built-in defaults; an explicitly
+    empty list is respected (the user cleared it on purpose).
+    """
+    raw = raw if isinstance(raw, dict) else {}
+    result: dict[str, list[str]] = {}
+    for side in ('work', 'personal'):
+        value = raw.get(side)
+        if not isinstance(value, list):
+            result[side] = list(DEFAULT_BROWSER_RULES[side])
+            continue
+        seen: set[str] = set()
+        cleaned: list[str] = []
+        for item in value:
+            d = _clean_domain(item)
+            if d and d not in seen:
+                seen.add(d)
+                cleaned.append(d)
+        result[side] = cleaned
+    return result
+
+
+def _string_list(value, default: list[str]) -> list[str]:
+    if not isinstance(value, list):
+        return list(default)
+    return [str(v).strip() for v in value if str(v).strip()]
+
+
 _cfg = _load_toml()
 
 
@@ -116,8 +173,22 @@ class Config:
     CATEGORIES: dict[str, list[str]] = _normalize_categories(_cfg.get('categories'))
     LOGS_DIR: str           = str(Path(_cfg.get('logs_dir', '~/.worklog/logs')).expanduser())
     SUMMARIES_DIR: str      = str(Path(_cfg.get('summaries_dir', '~/.worklog/summaries')).expanduser())
+    # Heartbeat: the poller writes a fresh entry at least this often, even if
+    # nothing changed. Between heartbeats it only writes when the app/window changes.
     POLL_INTERVAL: int      = int(_cfg.get('poll_interval', 300))
+    # How often the frontmost window is checked (seconds).
+    SAMPLE_INTERVAL: int    = max(5, int(_cfg.get('sample_interval', 20)))
     INACTIVITY_TIMEOUT: int = int(_cfg.get('inactivity_timeout', 300))
+    # Apps that are never logged (case-insensitive) — worklog itself by default.
+    IGNORE_APPS: list[str]  = _string_list(_cfg.get('ignore_apps'), ['worklog'])
+    # Window titles of these categories are never written to the log: chat
+    # subjects / DM names / mail subjects have no business in a timesheet.
+    REDACT_TITLE_TYPES: list[str] = _string_list(_cfg.get('redact_title_types'), ['communication'])
+    BROWSER_RULES: dict[str, list[str]] = _normalize_browser_rules(_cfg.get('browser_rules'))
+    # What to do with browser pages on a domain that is in neither list:
+    # "hide" (default) keeps only the domain and leaves it out of the summary,
+    # "work" treats it as work (title + query-less URL are logged).
+    BROWSER_UNKNOWN: str    = 'work' if str(_cfg.get('browser_unknown', 'hide')).lower() == 'work' else 'hide'
     GIT_REPOS: list[str]       = _cfg.get('git_repos', [])
     GIT_WORKSPACES: list[str]  = _cfg.get('git_workspaces', [])
     GIT_REPO_TAGS: dict[str, list[str]] = _cfg.get('git_tags', {})

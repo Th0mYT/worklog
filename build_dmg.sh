@@ -102,6 +102,19 @@ otool -L "$LIB_DYNLOAD"/*.so 2>/dev/null \
         fi
     done
 
+# ── 5b. sign the app ──────────────────────────────────────────────────────────
+# macOS ties Accessibility / Automation grants to the app's code identity. An ad-hoc
+# signature (the default, "-") changes with every build, so the grant silently stops
+# matching and window titles go blank. Sign with a stable identity to keep it:
+#   CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" bash build_dmg.sh
+# (list yours with: security find-identity -v -p codesigning)
+SIGN_ID="${CODESIGN_IDENTITY:--}"
+echo "==> Signing (${SIGN_ID})…"
+codesign --force --deep --sign "$SIGN_ID" "$APP_PATH"
+if [ "$SIGN_ID" = "-" ]; then
+    echo "    NOTE: ad-hoc signature — re-grant Accessibility after every build." >&2
+fi
+
 # ── 6. create DMG ─────────────────────────────────────────────────────────────
 echo "==> Creating DMG…"
 rm -f "$DMG_OUT"
