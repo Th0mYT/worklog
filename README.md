@@ -490,20 +490,55 @@ This script:
 2. Cleans any previous `build/`/`dist/` output.
 3. Regenerates the app icon (`make_icon.py` → `assets/worklog.icns`).
 4. Runs `setup.py py2app` to produce `dist/worklog.app`.
-5. Bundles any native `.dylib`s py2app misses so the app runs standalone.
-6. Packs `dist/worklog.app` into `dist/worklog-<version>.dmg`.
+5. Bundles any native `.dylib`s py2app misses so the app runs standalone (looked up in the
+   Python install's own `lib/`, then conda, Homebrew and `/usr/local`).
+6. Code-signs the app (see [Code signing](#code-signing) below).
+7. Packs `dist/worklog.app` into `dist/worklog-<version>.dmg`.
 
-Output: `dist/worklog-<version>.dmg` (version is set by `VERSION` at the top of
-`build_dmg.sh`).
+Output: `dist/worklog.app` and `dist/worklog-<version>.dmg` (version is set by `VERSION` at
+the top of `build_dmg.sh`). Both are git-ignored.
 
-Notes:
+### Code signing
+
+macOS ties the Accessibility and Automation grants to the app's code identity. By default the
+script signs ad-hoc, and an ad-hoc signature changes with every build, so after each rebuild
+the grant stops matching and window titles go blank until you re-grant it. To keep the grant
+across rebuilds, sign with a stable identity:
+
+```bash
+security find-identity -v -p codesigning          # list the identities in your keychain
+CODESIGN_IDENTITY="Apple Development: Your Name (XXXXXXXXXX)" bash build_dmg.sh
+```
+
+Any certificate from your keychain works (a free Apple Development one is enough for local
+use), as long as you use the same one every time. The identity can be the name or the SHA-1
+hash shown by `find-identity`. Builds signed this way aren't notarized: fine for your own
+machine, but other people will need to right-click → Open the first time.
+
+### Installing your build
+
+To replace an installed copy with a fresh build, quit worklog first, then:
+
+```bash
+rm -rf /Applications/worklog.app
+cp -R dist/worklog.app /Applications/worklog.app
+codesign --verify --deep --strict /Applications/worklog.app && echo OK
+```
+
+Or open `dist/worklog-<version>.dmg` and drag the app into `/Applications`.
+
+### Notes
 
 - macOS + Xcode Command Line Tools required (`xcode-select --install`) — py2app and PyObjC
   need them.
 - To build without the DMG step, run `python setup.py py2app` directly after
-  `make_icon.py`; the result is still `dist/worklog.app`.
+  `make_icon.py`; the result is still `dist/worklog.app` (unsigned and without the extra
+  dylibs, so prefer the script for anything you'll actually run).
 - `PYTHON=/path/to/python bash build_dmg.sh` overrides which interpreter builds the app
   (defaults to `.venv/bin/python`).
+- The script temporarily renames `pyproject.toml` while py2app runs (py2app rejects the
+  `install_requires` setuptools would otherwise inject) and restores it on exit. If a build is
+  killed hard, check that `pyproject.toml` is back and not left as `pyproject.toml.bak`.
 
 ---
 
