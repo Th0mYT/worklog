@@ -104,10 +104,13 @@ def _normalize_categories(raw) -> dict[str, list[str]]:
 
 
 def _normalize_commesse(raw) -> list[dict]:
-    """Coerce a user-supplied [[commesse]] array into [{name, client, keywords}].
+    """Coerce a user-supplied [[commesse]] array into [{name, client, keywords, archived}].
 
     Drops entries without a name and duplicate names. Unlike categories, an
     empty result is valid — "no commesse configured" is a normal state.
+    `archived` commesse keep matching past logs (keyword rules, headers) but
+    are hidden from "pick what you're working on" — they still show up in
+    Settings › Commesse so they can be unarchived.
     """
     if not isinstance(raw, list):
         return []
@@ -123,7 +126,8 @@ def _normalize_commesse(raw) -> list[dict]:
         client = str(item.get('client', '')).strip()
         keywords = item.get('keywords')
         keywords = [str(k).strip() for k in keywords if str(k).strip()] if isinstance(keywords, list) else []
-        result.append({'name': name, 'client': client, 'keywords': keywords})
+        result.append({'name': name, 'client': client, 'keywords': keywords,
+                        'archived': bool(item.get('archived'))})
     return result
 
 
@@ -194,6 +198,10 @@ class Config:
     GIT_REPO_TAGS: dict[str, list[str]] = _cfg.get('git_tags', {})
     GIT_AUTHOR: str            = _cfg.get('git_author', '')
     COMMESSE: list[dict]       = _normalize_commesse(_cfg.get('commesse', []))
+    # Prompt "what are you working on?" (and hold off tracking) on launch/after
+    # idle auto-stop when no commessa is active. Off only makes sense if you
+    # don't track by commessa at all.
+    ASK_COMMESSA_ON_START: bool = bool(_cfg.get('ask_commessa_on_start', True))
 
     # Summarizer
     SUMMARIZER_BACKEND: str = _cfg.get('summarizer_backend', 'ollama')

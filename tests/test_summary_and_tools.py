@@ -60,10 +60,20 @@ class Rendering(unittest.TestCase):
         lines = text.splitlines()
         self.assertEqual(lines[0], '## Screening')
         self.assertRegex(lines[1], r'^Built the endpoint \(\d+(\.\d+)?h\) \[api\]$')
-        self.assertIn('## Fuori commessa', lines)
+        self.assertIn('## Generale', lines)
         self.assertRegex(lines[-1], r'^Total: \d+(\.\d+)?h$')
         listed = sum(float(l.rsplit('(', 1)[1].split('h')[0]) for l in lines if l.endswith(']') or l.endswith('h)'))
         self.assertAlmostEqual(listed, day.total_hours)
+
+    def test_leftover_commessa_not_in_config_still_gets_a_header(self):
+        # e.g. renamed/removed after the log was written, or picked ad hoc from the UI
+        renamed_entries = [snap('09:00', commessa='Old name'), snap('09:10'),
+                            {'ts': f'{D}T09:15:00', 'marker': 'stop'}]
+        day = build_day(renamed_entries, commesse=COMMESSE, rules=RULES,
+                         unknown_policy='hide', heartbeat=300)
+        with mock.patch.object(Config, 'COMMESSE', COMMESSE):
+            text = ds.render_summary(day, {})
+        self.assertIn('## Old name', text.splitlines())
 
     def test_missing_description_falls_back_to_the_data(self):
         with mock.patch.object(Config, 'COMMESSE', COMMESSE):

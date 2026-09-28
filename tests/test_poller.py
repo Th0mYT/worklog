@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from config import Config
-from logger import activity_poller as ap
+from logger import active, activity_poller as ap
 from logger import pause
 from logger.browser_reader import TabInfo
 from logger.extractors import RepoInfo
@@ -30,6 +30,16 @@ INDEX = {'khero-backend': RepoInfo('khero-backend', '/nonexistent/khero-backend'
 
 
 class BuildEntry(unittest.TestCase):
+    def setUp(self):
+        # Isolate from any real ~/.worklog/active.json on the machine running the tests.
+        self.tmp = tempfile.TemporaryDirectory()
+        self.active_patch = mock.patch.object(active, 'ACTIVE_FILE', Path(self.tmp.name) / 'active.json')
+        self.active_patch.start()
+
+    def tearDown(self):
+        self.active_patch.stop()
+        self.tmp.cleanup()
+
     def build(self, app, window='', tab_fn=None, **kw):
         with patch_config():
             return ap.build_entry(FrontWindow(app=app, window=window), kw.get('index', {}),
@@ -108,6 +118,15 @@ class BuildEntry(unittest.TestCase):
                                    tab_fn=lambda a: None, cwd_fn=lambda a: str(repo / 'src'))
         self.assertEqual(e['project'], 'khero-backend')
         self.assertEqual(e['tags'], ['ddh', 'backend'])
+
+    def test_active_commessa_is_attached_when_set(self):
+        active.set_active('Backend revamp')
+        e = self.build('WebStorm', 'x.ts')
+        self.assertEqual(e['commessa'], 'Backend revamp')
+
+    def test_no_active_commessa_means_no_field(self):
+        e = self.build('WebStorm', 'x.ts')
+        self.assertNotIn('commessa', e)
 
 
 class TrackerBehaviour(unittest.TestCase):
@@ -212,6 +231,37 @@ class PauseFile(unittest.TestCase):
     def test_corrupt_file_means_not_paused(self):
         pause.PAUSE_FILE.write_text('{not json')
         self.assertFalse(pause.is_paused())
+
+
+class ActiveFile(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.patch = mock.patch.object(active, 'ACTIVE_FILE', Path(self.tmp.name) / 'active.json')
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+        self.tmp.cleanup()
+
+    def test_lifecycle(self):
+        self.assertIsNone(active.active_commessa())
+        state = active.set_active('Backend revamp')
+        self.assertEqual(state, {'name': 'Backend revamp', 'since': state['since']})
+        self.assertEqual(active.active_commessa(), 'Backend revamp')
+        active.set_active('Redesign sito')            # switching overwrites, doesn't stack
+        self.assertEqual(active.active_commessa(), 'Redesign sito')
+        self.assertIsNone(active.clear_active()['name'])
+        self.assertIsNone(active.active_commessa())
+
+    def test_blank_name_clears(self):
+        active.set_active('Backend revamp')
+        active.set_active('  ')
+        self.assertIsNone(active.active_commessa())
+
+    def test_corrupt_file_means_no_active_commessa(self):
+        active.ACTIVE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        active.ACTIVE_FILE.write_text('{not json')
+        self.assertIsNone(active.active_commessa())
 
 
 if __name__ == '__main__':

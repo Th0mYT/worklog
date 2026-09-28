@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from config import Config
-from logger import pause
+from logger import active, pause
 
 import ui.app as app
 
@@ -27,6 +27,7 @@ class ApiTest(unittest.TestCase):
         self.patches = [
             mock.patch.object(app, '_CONFIG_PATH', self.cfg_path),
             mock.patch.object(pause, 'PAUSE_FILE', root / 'paused.json'),
+            mock.patch.object(active, 'ACTIVE_FILE', root / 'active.json'),
         ]
         for p in self.patches:
             p.start()
@@ -171,6 +172,42 @@ class ApiTest(unittest.TestCase):
         self.assertTrue(st['paused_until'])
         self.assertFalse(self.api.resume_tracking()['paused'])
         self.assertIn('capture_problem', self.api.status())
+
+    # -- active commessa --------------------------------------------------------
+
+    def test_start_is_blocked_until_a_commessa_is_chosen(self):
+        self.api.save_settings(self.api.get_settings())   # config now exists on disk
+        self.assertTrue(self.api.status()['needs_commessa'])
+        result = self.api.start()
+        self.assertFalse(result['ok'])
+        self.assertTrue(result['needs_commessa'])
+        self.assertFalse(self.api.status()['running'])
+
+        chosen = self.api.set_active_commessa('Backend revamp')
+        self.assertTrue(chosen['ok'])
+        st = self.api.status()
+        self.assertEqual(st['active_commessa'], 'Backend revamp')
+        self.assertFalse(st['needs_commessa'])
+        self.assertTrue(st['running'])
+        self.api._stop_process()
+
+    def test_set_active_commessa_adds_an_unknown_name_to_config(self):
+        self.api.save_settings(self.api.get_settings())
+        self.api.set_active_commessa('Team management')
+        names = [c['name'] for c in self.api.get_settings()['commesse']]
+        self.assertIn('Team management', names)
+        self.api._stop_process()
+
+    def test_commessa_hours_today_groups_by_logged_commessa(self):
+        today = datetime.now().strftime('%Y-%m-%d')
+        self.write_log([
+            {'ts': f'{today}T09:00:00', 'app': 'X', 'window': '', 'type': 'coding', 'commessa': 'Backend revamp'},
+            {'ts': f'{today}T09:05:00', 'app': 'X', 'window': '', 'type': 'coding', 'commessa': 'Backend revamp'},
+            {'ts': f'{today}T09:10:00', 'marker': 'stop'},
+        ], day=today)
+        hours = self.api.commessa_hours_today()
+        self.assertEqual(hours['date'], today)
+        self.assertEqual(hours['hours']['Backend revamp'], 0.25)
 
 
 if __name__ == '__main__':

@@ -10,7 +10,9 @@ that is arithmetic or rule-matching is done here instead:
      at 1.5 heartbeats, trimmed by idle/pause/stop markers, and cut by manual
      time blocks (which win over the automatic samples they overlap)
   3. anything private, personal or unclassified is dropped, and only counted
-  4. samples and commits are assigned to a commessa (or tag) by keyword rules
+  4. samples and commits are assigned to a commessa: the commessa active when
+     the poller wrote the entry (logger/active.py) wins outright; otherwise it
+     falls back to keyword rules (or a #tag, if no commesse are configured)
   5. samples are grouped into sessions (gap > 30 min = new session) and, inside
      a session, into one block per assignment
 
@@ -33,7 +35,7 @@ INHERIT_WINDOW = timedelta(minutes=120)
 MIN_BLOCK_MINUTES = 5
 ORPHAN_COMMIT_MINUTES = 15
 ROUND_TO_HOURS = 0.25
-UNASSIGNED = 'Fuori commessa'
+UNASSIGNED = 'Generale'
 
 _GAP_BEGIN = {'idle_start', 'pause', 'stop'}
 _GAP_END = {'idle_end', 'resume', 'start'}
@@ -404,6 +406,11 @@ def build_day(entries: list[dict], *, commesse: list[dict] | None = None,
 
 
 def _assignment(entry: dict, texts: list, assign_commessa, tag_mode: bool) -> str | None:
+    # An entry the poller wrote while a commessa was active carries it directly
+    # (logger/active.py) — that explicit choice always wins over keyword rules.
+    commessa = entry.get('commessa')
+    if commessa:
+        return commessa
     tags = entry.get('tags') or []
     if tag_mode:
         return f'#{tags[0]}' if tags else None

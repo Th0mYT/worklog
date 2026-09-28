@@ -55,13 +55,17 @@ remote llm-council instance).
   IDE window title that doesn't include the repo folder name, a repo not yet in your
   config…). From the log detail view you can add or fix the project tag(s) on any entry by
   hand, so it's grouped under the right commessa/category in the summary instead of landing
-  in "Fuori commessa" and needing a manual fix afterward.
+  in "Generale" and needing a manual fix afterward.
+- **Active commessa picker** — pick "what are you working on?" from the UI (or type a new
+  one on the fly) and every entry the poller writes carries that commessa directly, no
+  keyword guessing needed — the one way to correctly track work with no repo or window title
+  of its own, like team management or a release call. Tracking doesn't start until one is
+  picked; switch commesse mid-day from the status card any time. See
+  [Client work orders (commesse)](#client-work-orders-commesse).
 - **AI daily summaries** — five interchangeable backends (Ollama, Claude CLI, Anthropic,
   OpenAI, llm-council), with live progress feedback and a cancel button. Durations, gaps,
   commessa assignment and the total are computed in code; the model only writes one short
   description per block, so a small local model can't skew the numbers.
-- **Client work orders (commesse)** — group a day's sessions by client/project based on
-  git repo, tag, or keyword matches, entirely configurable from the UI.
 - **Configurable categories** — classify apps into `coding`, `meeting`, `browser`, `design`,
   `productivity`, `communication`, or your own custom set.
 - **Native macOS UI** — start/stop the poller, enrich, summarize, browse and edit any day's
@@ -203,6 +207,12 @@ ollama_model        = "qwen2.5:7b"
 # name     = "Backend revamp"
 # client   = "Acme Corp"
 # keywords = ["acme", "backend-api"]
+# archived = false
+
+# Ask "what are you working on?" (and hold off tracking) when no commessa is
+# active — default true. Set to false if you don't track work by commessa.
+# See "Client work orders" below.
+ask_commessa_on_start = true
 ```
 
 See [`worklog.example.toml`](worklog.example.toml) for the full, commented reference.
@@ -301,7 +311,7 @@ Analytics module refactoring — metric handling, filtering, query DTO consolida
 Session event & status logic — skip support, status sync, progress calculation (2.0h) [backend-api]
 Redis logging fix — deduplicated connection events (0.5h) [backend-api]
 
-## Fuori commessa
+## Generale
 
 Team communication and PR reviews (1.0h) [Slack]
 
@@ -317,13 +327,15 @@ Each line in the daily `.jsonl` file is one of:
 **Activity entry** (from poller) — "at `ts`, this was in front"; how long it lasted is derived
 from the next entry, so nothing needs a fixed polling grid:
 ```json
-{"ts": "2026-06-18T09:05:00", "app": "Cursor", "window": "ui/app.py — worklog", "type": "coding", "project": "worklog", "file": "app.py", "branch": "feature/KH-682-fix", "tags": ["personal"]}
+{"ts": "2026-06-18T09:05:00", "app": "Cursor", "window": "ui/app.py — worklog", "type": "coding", "project": "worklog", "file": "app.py", "branch": "feature/KH-682-fix", "tags": ["personal"], "commessa": "Backend revamp"}
 {"ts": "2026-06-18T10:30:00", "app": "Google Chrome", "window": "", "type": "browser", "domain": "github.com", "site_class": "work", "tab_title": "GitHub PR #42", "url": "https://github.com/o/r/pull/42"}
 {"ts": "2026-06-18T10:45:00", "app": "Google Chrome", "window": "", "type": "browser", "domain": "twitch.tv", "site_class": "personal"}
 {"ts": "2026-06-18T10:50:00", "app": "Google Chrome", "window": "", "type": "browser", "excluded": true, "reason": "private"}
 {"ts": "2026-06-18T11:00:00", "app": "Discord", "window": "standup call", "type": "meeting"}
 ```
-`wip_files` (uncommitted files) appears on heartbeat entries for configured repos.
+`wip_files` (uncommitted files) appears on heartbeat entries for configured repos. `commessa`
+appears only while one is active (picked from the status card) and always wins over the
+keyword rules in [Client work orders](#client-work-orders-commesse).
 
 **Marker** — delimits time you weren't there; the summarizer trims and drops entries around it:
 ```json
@@ -389,8 +401,26 @@ a signal word (`call`, `standup`, `voice`, `video`, …) — see `MEETING_WINDOW
 
 ## Client work orders (commesse)
 
-If you bill or report time by client or project, define a `[[commesse]]` entry per work
-order in your config (or from **Settings › Commesse** in the UI):
+If you bill or report time by client or project, worklog groups a day's sessions by
+**commessa** in two ways that work together:
+
+### 1. Pick it — the reliable way
+
+The status card shows **"Ora: <commessa>"**; click **Cambia** any time to switch, or type a
+new name on the fly (client optional — it's added to your commesse the moment you use it,
+no detour through Settings first). With **"ask what I'm working on"** enabled (the default —
+Settings › Commesse), tracking won't start until you've picked one: the app never tracks
+silently under the wrong bucket. Once picked, the choice is remembered for the day — an
+idle auto-stop resumes on the same commessa without asking again, and only a new day (or an
+explicit switch) prompts again. Every entry the poller writes while a commessa is active
+carries it directly, so the summary needs no guessing for activities with no repo or window
+title of their own — team management, a client call, a release.
+
+### 2. Keyword rules — the automatic fallback
+
+For entries with no commessa attached (older logs, or the CLI poller run without the UI),
+define a `[[commesse]]` entry per work order in your config (or from **Settings › Commesse**
+in the UI):
 
 ```toml
 [[commesse]]
@@ -404,14 +434,22 @@ client   = "Beta srl"
 keywords = ["beta", "figma"]
 ```
 
-Assignment is rule-based, not up to the model. A commessa matches when one of its `keywords`
-appears as a whole token in the repo name, branch, IDE project/file, window or page title,
-tag, note or commit message (`KH-682` matches `feature/KH-682-fix` but not `KH-6820`); the
-client name counts as a keyword only when a single commessa has that client. Unassigned
-work in a repo also takes the commessa of that repo's next matching commit (within 2 hours).
-Everything unmatched goes under `## Fuori commessa`. Put a ticket key or repo name in
-`keywords` and both the IDE time and the commits will land in the right place. Omit the
-table entirely if you don't track work by client.
+A commessa matches when one of its `keywords` appears as a whole token in the repo name,
+branch, IDE project/file, window or page title, tag, note or commit message (`KH-682`
+matches `feature/KH-682-fix` but not `KH-6820`); the client name counts as a keyword only
+when a single commessa has that client. Unassigned work in a repo also takes the commessa of
+that repo's next matching commit (within 2 hours). A picked commessa always wins over a
+keyword match when both apply.
+
+Everything still unmatched goes under `## Generale`. A commessa can be **archived**
+(a checkbox next to it in Settings › Commesse) instead of deleted — hidden from the picker,
+but still listed in Settings (so it can be unarchived) and still matched in past logs, so old
+summaries keep their headers.
+
+If you don't track work by client at all, either leave `[[commesse]]` empty *and* uncheck
+"ask what I'm working on" in Settings › Commesse — otherwise the picker still opens before
+each start (with only the "+ nuova" field to offer, since there's nothing configured yet)
+since that's also how the very first commessa gets created.
 
 ---
 

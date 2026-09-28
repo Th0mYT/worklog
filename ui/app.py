@@ -23,12 +23,14 @@ sys.path.insert(0, str(_ROOT))
 from config import (  # noqa: E402
     Config, _clean_domain, _normalize_browser_rules, _normalize_categories, _normalize_commesse, _string_list,
 )
+from logger import active as _active  # noqa: E402
 from logger import pause as _pause  # noqa: E402
 from logger.activity_poller import _system_idle_seconds, run_loop  # noqa: E402
 from logger.extractors import classify_domain, domain_of  # noqa: E402
 from logger.logio import LOG_LOCK, rewrite_atomic  # noqa: E402
 from logger.timeutil import entry_time, parse_ts  # noqa: E402
 from logger.window_info import health as _capture_health, open_accessibility_settings  # noqa: E402
+from summarizer.sessions import UNASSIGNED, build_day  # noqa: E402
 
 _CONFIG_PATH = Path.home() / '.worklog' / 'config.toml'
 
@@ -265,6 +267,28 @@ _HTML = """<!DOCTYPE html>
     @media (prefers-color-scheme: dark) {
       .ws-label.active { color: #ffa733; }
     }
+    /* archived toggle pill — same shape as .ws-label, its own (neutral) color */
+    .arch-label {
+      display: inline-flex; align-items: center;
+      font-size: 10px; font-weight: 600; letter-spacing: 0.2px;
+      color: var(--text-sec);
+      background: var(--repo-input);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 3px 8px;
+      cursor: pointer; white-space: nowrap; flex-shrink: 0;
+      transition: color .12s, background .12s, border-color .12s;
+      -webkit-user-select: none; user-select: none;
+    }
+    .arch-label input[type=checkbox] { display: none; }
+    .arch-label.active {
+      color: #c96000;
+      background: rgba(255,149,0,.13);
+      border-color: rgba(255,149,0,.38);
+    }
+    @media (prefers-color-scheme: dark) {
+      .arch-label.active { color: #ffa733; }
+    }
     .repo-remove {
       background: none; border: none;
       color: var(--placeholder); cursor: pointer;
@@ -360,6 +384,53 @@ _HTML = """<!DOCTYPE html>
     #status-text { font-size: 17px; font-weight: 600; }
 
     .meta { font-size: 12px; color: var(--text-sec); margin-top: 5px; line-height: 1.5; }
+
+    /* ── active commessa ── */
+    .commessa-row {
+      display: flex; align-items: center; gap: 7px;
+      font-size: 12px; color: var(--text-sec);
+      margin-top: 7px;
+    }
+    .commessa-name {
+      font-weight: 600; color: var(--text);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      flex: 1; min-width: 0;
+    }
+    #commessa-hours { word-break: break-word; }
+
+    #commessa-modal {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.35);
+      align-items: center; justify-content: center;
+      z-index: 900;
+      padding: 24px;
+    }
+    #commessa-modal .card {
+      width: 100%; max-width: 360px;
+      max-height: 100%; overflow-y: auto;
+      position: relative;
+    }
+    .commessa-modal-close {
+      position: absolute; top: 10px; right: 12px;
+      background: none; border: none; cursor: pointer;
+      font-size: 18px; line-height: 1; color: var(--text-ter);
+    }
+    .commessa-modal-close:hover { color: var(--text); }
+    .commessa-pick-list {
+      display: flex; flex-direction: column; gap: 6px;
+      margin: 10px 0 14px;
+    }
+    .commessa-pick-btn {
+      display: flex; align-items: baseline; gap: 6px;
+      background: var(--surface-alt); border: 1px solid var(--border-lt);
+      border-radius: 9px; padding: 9px 12px;
+      font-family: inherit; font-size: 13px; font-weight: 600; color: var(--text);
+      text-align: left; cursor: pointer;
+      transition: border-color .12s, background .12s;
+    }
+    .commessa-pick-btn:hover { border-color: var(--accent); background: var(--surface-raise); }
+    .commessa-pick-client { font-weight: 400; color: var(--text-sec); font-size: 12px; }
 
     /* ── capture-health banner ── */
     .banner {
@@ -1018,6 +1089,12 @@ _HTML = """<!DOCTYPE html>
       </div>
       <div class="meta" id="last-ts"></div>
       <div class="meta" id="count"></div>
+      <div class="commessa-row" id="commessa-row" style="display:none">
+        <span>Ora:</span>
+        <span class="commessa-name" id="commessa-name">—</span>
+        <button class="btn-gray btn-xs" onclick="openCommessaPicker(true)">Cambia</button>
+      </div>
+      <div class="meta" id="commessa-hours"></div>
       <div class="btn-row">
         <button class="btn-green" id="btn-start" onclick="startPoller()">Start</button>
         <button class="btn-red"   id="btn-stop"  onclick="stopPoller()">Stop</button>
@@ -1239,10 +1316,13 @@ _HTML = """<!DOCTYPE html>
         <div class="field-hint" style="margin-top:0;margin-bottom:8px">
           Cliente e commessa a cui le attività vengono assegnate nel riepilogo giornaliero.
         </div>
-        <div class="field-group" style="margin-bottom:0">
+        <div class="field-group" style="margin-bottom:10px">
           <div id="com-list" class="repo-list"></div>
           <button class="repo-add-btn" onclick="addCommessaRow()" style="margin-top:4px">+ Add commessa</button>
         </div>
+        <label class="dry-label">
+          <input type="checkbox" id="s-ask-commessa"> Chiedi su cosa sto lavorando quando parte il tracking
+        </label>
       </div>
 
       <!-- ── Summarizer ── -->
@@ -1335,6 +1415,24 @@ _HTML = """<!DOCTYPE html>
 
 </div><!-- /wrap -->
 <div id="toast"></div>
+
+<!-- "what are you working on?" — commessa picker -->
+<div id="commessa-modal">
+  <div class="card">
+    <button class="commessa-modal-close" id="commessa-modal-close" onclick="closeCommessaPicker()" title="Close">×</button>
+    <div class="section-title" id="commessa-modal-title">Su cosa stai lavorando?</div>
+    <div class="commessa-pick-list" id="commessa-pick-list"></div>
+    <div class="field-group" style="margin-bottom:8px">
+      <label class="field-label" for="commessa-new-name">Nuova commessa</label>
+      <input type="text" id="commessa-new-name" placeholder="es. Backend revamp">
+    </div>
+    <div class="field-group" style="margin-bottom:12px">
+      <label class="field-label" for="commessa-new-client">Cliente (opzionale)</label>
+      <input type="text" id="commessa-new-client" placeholder="es. Acme Corp">
+    </div>
+    <button class="btn-green" style="width:100%" onclick="createCommessaFromForm()">Inizia a tracciare</button>
+  </div>
+</div>
 
 <script>
   let api = null;
@@ -1530,7 +1628,7 @@ _HTML = """<!DOCTYPE html>
 
   // ── commesse list ────────────────────────────────────────────────────────────
 
-  function addCommessaRow(name = '', client = '', keywords = []) {
+  function addCommessaRow(name = '', client = '', keywords = [], archived = false) {
     const list = document.getElementById('com-list');
     const row  = document.createElement('div');
     row.className = 'repo-row';
@@ -1543,11 +1641,19 @@ _HTML = """<!DOCTYPE html>
       </div>
       <div class="repo-row-meta">
         <input type="text" class="repo-tags com-keywords" placeholder="keywords: acme, backend-api…">
+        <label class="arch-label${archived ? ' active' : ''}"
+               title="Nascosta dalla scelta commessa e dall'elenco attivo, ma i log passati restano assegnati.">
+          <input type="checkbox" class="com-archived"> archiviata
+        </label>
       </div>
     `;
+    const archChk = row.querySelector('.com-archived');
+    const archLbl = row.querySelector('.arch-label');
     row.querySelector('.com-name').value   = name;
     row.querySelector('.com-client').value = client;
     row.querySelector('.com-keywords').value = kwVal;
+    archChk.checked = !!archived;
+    archChk.addEventListener('change', () => archLbl.classList.toggle('active', archChk.checked));
     row.querySelector('.repo-remove').onclick = () => row.remove();
     list.appendChild(row);
     return row;
@@ -1563,6 +1669,7 @@ _HTML = """<!DOCTYPE html>
         client: (row.querySelector('.com-client')?.value || '').trim(),
         keywords: (row.querySelector('.com-keywords')?.value || '')
                     .split(',').map(k => k.trim()).filter(Boolean),
+        archived: !!row.querySelector('.com-archived')?.checked,
       });
     });
     return out;
@@ -1644,8 +1751,9 @@ _HTML = """<!DOCTYPE html>
     if (!Object.keys(cats).length) addCategoryRow();
     document.getElementById('com-list').innerHTML = '';
     const commesse = s.commesse || [];
-    commesse.forEach(c => addCommessaRow(c.name, c.client, c.keywords));
+    commesse.forEach(c => addCommessaRow(c.name, c.client, c.keywords, c.archived));
     if (!commesse.length) addCommessaRow();
+    document.getElementById('s-ask-commessa').checked = s.ask_commessa_on_start !== false;
     document.getElementById('s-backend').value       = s.summarizer_backend || 'ollama';
     document.getElementById('s-ollama-url').value    = s.ollama_url || '';
     document.getElementById('s-ollama-model').value  = s.ollama_model || '';
@@ -1702,6 +1810,7 @@ _HTML = """<!DOCTYPE html>
           git_paths:          getPaths(),
           categories:         getCategories(),
           commesse:           getCommesse(),
+          ask_commessa_on_start: document.getElementById('s-ask-commessa').checked,
           summarizer_backend: document.getElementById('s-backend').value,
           ollama_url:         document.getElementById('s-ollama-url').value.trim(),
           ollama_model:       document.getElementById('s-ollama-model').value.trim(),
@@ -1769,6 +1878,14 @@ _HTML = """<!DOCTYPE html>
       document.getElementById('btn-start').disabled = s.running;
       document.getElementById('btn-stop').disabled  = !s.running && !isAutoPaused;
 
+      document.getElementById('commessa-row').style.display = s.active_commessa ? 'flex' : 'none';
+      document.getElementById('commessa-name').textContent = s.active_commessa || '—';
+      loadCommessaHours();
+      const commessaModal = document.getElementById('commessa-modal');
+      if (s.needs_commessa && commessaModal.style.display !== 'flex') {
+        openCommessaPicker(false);
+      }
+
       const list = document.getElementById('log-list');
       if (!l.logs.length) {
         list.innerHTML = '<p class="no-logs">No log files yet.</p>';
@@ -1801,11 +1918,81 @@ _HTML = """<!DOCTYPE html>
   async function startPoller() {
     await withBtn('btn-start', 'Starting…', async () => {
       try {
-        await api.start();
+        const r = await api.start();
+        if (r && r.needs_commessa) { openCommessaPicker(false); return; }
         await refresh();
         showToast('Poller started', 'ok');
       } catch (e) { showToast('Failed to start', 'error'); }
     });
+  }
+
+  // ── active commessa ────────────────────────────────────────────────────────
+
+  async function openCommessaPicker(isSwitch) {
+    const r = await api.get_active_commessa();
+    document.getElementById('commessa-modal-title').textContent =
+      isSwitch ? 'Cambia commessa' : 'Su cosa stai lavorando?';
+    document.getElementById('commessa-modal-close').style.display = isSwitch ? '' : 'none';
+    const list = document.getElementById('commessa-pick-list');
+    list.innerHTML = '';
+    const picks = (r.commesse || []).filter(c => c.name !== r.name);
+    if (!picks.length) {
+      list.innerHTML = '<p class="no-logs" style="margin:0">Nessuna commessa configurata.</p>';
+    } else {
+      // built with the DOM (not innerHTML + inline onclick) so a name/client
+      // containing a quote can never break out of an HTML attribute
+      picks.forEach(c => {
+        const btn = document.createElement('button');
+        btn.className = 'commessa-pick-btn';
+        btn.textContent = c.name;
+        if (c.client) {
+          const span = document.createElement('span');
+          span.className = 'commessa-pick-client';
+          span.textContent = ' · ' + c.client;
+          btn.appendChild(span);
+        }
+        btn.onclick = () => chooseCommessa(c.name);
+        list.appendChild(btn);
+      });
+    }
+    document.getElementById('commessa-new-name').value = '';
+    document.getElementById('commessa-new-client').value = '';
+    document.getElementById('commessa-modal').style.display = 'flex';
+  }
+
+  function closeCommessaPicker() {
+    document.getElementById('commessa-modal').style.display = 'none';
+  }
+
+  async function chooseCommessa(name, client) {
+    name = (name || '').trim();
+    if (!name) return;
+    try {
+      await api.set_active_commessa(name, client || '');
+      closeCommessaPicker();
+      showToast('Commessa: ' + name, 'ok');
+      await refresh();
+    } catch (e) { showToast('Could not set the commessa', 'error'); }
+  }
+
+  function createCommessaFromForm() {
+    chooseCommessa(document.getElementById('commessa-new-name').value,
+                  document.getElementById('commessa-new-client').value);
+  }
+
+  function _fmtH(h) {
+    return (Math.round(h * 100) / 100) + 'h';
+  }
+
+  async function loadCommessaHours() {
+    const box = document.getElementById('commessa-hours');
+    try {
+      const r = await api.commessa_hours_today();
+      const entries = Object.entries(r.hours || {}).sort((a, b) => b[1] - a[1]);
+      box.textContent = entries.length
+        ? 'Oggi: ' + entries.map(([n, h]) => n + ' ' + _fmtH(h)).join(' · ')
+        : '';
+    } catch (e) { /* leave as-is */ }
   }
 
   async function stopPoller() {
@@ -2379,6 +2566,7 @@ def _build_toml(d: dict) -> str:
         f'ignore_apps = {_toml_list(d["ignore_apps"])}',
         f'redact_title_types = {_toml_list(d["redact_title_types"])}',
         f'browser_unknown = {_toml_str(d["browser_unknown"])}',
+        f'ask_commessa_on_start = {"true" if d.get("ask_commessa_on_start", True) else "false"}',
     ]
     # Keys this UI has no field for must survive a save instead of being wiped.
     for key in ('summaries_dir', 'anthropic_api_key', 'anthropic_model'):
@@ -2447,6 +2635,7 @@ def _build_toml(d: dict) -> str:
         lines.append(f'client = {_toml_str(c.get("client", ""))}')
         kw_str = '[' + ', '.join(_toml_str(k) for k in (c.get('keywords') or [])) + ']'
         lines.append(f'keywords = {kw_str}')
+        lines.append(f'archived = {"true" if c.get("archived") else "false"}')
 
     return '\n'.join(lines) + '\n'
 
@@ -2500,9 +2689,12 @@ class _API:
         self._summary_lock = threading.Lock()
         self._summary_started_at: float = 0.0
         self._scan_cache: dict[Path, tuple[tuple[int, int], dict]] = {}
+        self._hours_cache: dict[str, tuple[tuple[int, int], dict]] = {}
         threading.Thread(target=self._auto_manager, daemon=True).start()
-        if _CONFIG_PATH.exists():
+        if _CONFIG_PATH.exists() and not self._needs_commessa():
             self._start_process()
+        # else: wait for the UI to call set_active_commessa() — see "what are
+        # you working on?" in the ── commessa ── section below.
 
     # ── config ────────────────────────────────────────────────────────────────
 
@@ -2530,6 +2722,7 @@ class _API:
             'git_paths':          paths,
             'categories':         {k: list(v) for k, v in Config.CATEGORIES.items()},
             'commesse':           [dict(c) for c in Config.COMMESSE],
+            'ask_commessa_on_start': Config.ASK_COMMESSA_ON_START,
             'summarizer_backend': Config.SUMMARIZER_BACKEND,
             'ollama_url':         Config.OLLAMA_URL,
             'ollama_model':       Config.OLLAMA_MODEL,
@@ -2552,6 +2745,7 @@ class _API:
             **_preserved_keys(),
             'categories':           categories,
             'commesse':             commesse,
+            'ask_commessa_on_start': bool(data.get('ask_commessa_on_start', True)),
             'logs_dir':             data.get('logs_dir', '~/.worklog/logs'),
             'poll_interval':        int(data.get('poll_interval', 300)),
             'sample_interval':      max(5, int(data.get('sample_interval', 20))),
@@ -2577,6 +2771,7 @@ class _API:
 
         Config.CATEGORIES           = categories
         Config.COMMESSE             = commesse
+        Config.ASK_COMMESSA_ON_START = payload['ask_commessa_on_start']
         Config.LOGS_DIR             = str(Path(payload['logs_dir']).expanduser())
         Config.POLL_INTERVAL        = payload['poll_interval']
         Config.SAMPLE_INTERVAL      = payload['sample_interval']
@@ -2599,6 +2794,81 @@ class _API:
 
         return {"ok": True}
 
+    # ── active commessa ──────────────────────────────────────────────────────────
+
+    def _needs_commessa(self) -> bool:
+        """True when tracking shouldn't (re)start until the user says what they're on.
+
+        Asked once per day: an active commessa picked earlier today is enough
+        to resume silently (e.g. after an idle auto-stop); a stale one from a
+        previous day, or none at all, needs a fresh pick.
+        """
+        if not Config.ASK_COMMESSA_ON_START:
+            return False
+        state = _active.active_state()
+        if not state['name']:
+            return True
+        since = parse_ts(state['since'])
+        return not since or since.date() != datetime.now().date()
+
+    def get_active_commessa(self) -> dict:
+        state = _active.active_state()
+        active = [c for c in Config.COMMESSE if not c.get('archived')]
+        return {**state, "needs_commessa": self._needs_commessa(), "commesse": active}
+
+    def set_active_commessa(self, name: str, client: str = '') -> dict:
+        """Make `name` the active commessa and (re)start tracking under it.
+
+        A name not yet in Config.COMMESSE is added on the fly (empty keywords,
+        editable later from Settings › Commesse) so picking it once is enough —
+        no detour through Settings first.
+        """
+        name = (name or '').strip()
+        if not name:
+            return {"ok": False, "error": "empty"}
+        if not any(c['name'] == name for c in Config.COMMESSE):
+            settings = self.get_settings()
+            settings['commesse'] = settings['commesse'] + [
+                {'name': name, 'client': (client or '').strip(), 'keywords': [], 'archived': False}
+            ]
+            self.save_settings(settings)
+        _active.set_active(name)
+        self._manual_stop = False
+        self._was_idle_stop = False
+        self._start_process()
+        return {"ok": True, **_active.active_state()}
+
+    def _hours_by_commessa(self, date_str: str) -> dict[str, float]:
+        f = Path(Config.LOGS_DIR) / f'{date_str}.jsonl'
+        try:
+            st = f.stat()
+        except OSError:
+            return {}
+        key = (st.st_mtime_ns, st.st_size)
+        cached = self._hours_cache.get(date_str)
+        if cached and cached[0] == key:
+            return cached[1]
+        entries = []
+        try:
+            for ln in f.read_text().splitlines():
+                if ln.strip():
+                    try:
+                        entries.append(json.loads(ln))
+                    except json.JSONDecodeError:
+                        pass
+        except OSError:
+            pass
+        hours: dict[str, float] = {}
+        for b in build_day(entries).blocks:
+            k = b.assignment or UNASSIGNED
+            hours[k] = round(hours.get(k, 0) + b.hours, 2)
+        self._hours_cache[date_str] = (key, hours)
+        return hours
+
+    def commessa_hours_today(self) -> dict:
+        today = datetime.now().strftime('%Y-%m-%d')
+        return {"date": today, "hours": self._hours_by_commessa(today)}
+
     # ── auto-manager ──────────────────────────────────────────────────────────
 
     def _auto_manager(self) -> None:
@@ -2618,7 +2888,7 @@ class _API:
                         _was_idle = True
                         self._was_idle_stop = True
                         self._stop_process()
-                elif _was_idle and not self._manual_stop:
+                elif _was_idle and not self._manual_stop and not self._needs_commessa():
                     try:
                         self._start_process()
                         _was_idle = False
@@ -2668,6 +2938,8 @@ class _API:
             self._poller = None
 
     def start(self) -> dict:
+        if self._needs_commessa():
+            return {"ok": False, "needs_commessa": True}
         self._manual_stop = False
         self._was_idle_stop = False
         self._start_process()
@@ -2689,6 +2961,7 @@ class _API:
         running = self._poller is not None and self._poller.is_alive()
         last_ts, count = self._today_stats()
         paused = _pause.pause_state()
+        active = _active.active_state()
         return {
             "running": running,
             "last_ts": last_ts,
@@ -2699,6 +2972,8 @@ class _API:
             "paused": paused["paused"],
             "paused_until": paused["until"],
             "capture_problem": _capture_health()["problem"],
+            "active_commessa": active["name"],
+            "needs_commessa": self._needs_commessa(),
         }
 
     # ── log list ──────────────────────────────────────────────────────────────

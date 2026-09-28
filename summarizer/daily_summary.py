@@ -221,7 +221,15 @@ def _headers(day: DayModel) -> tuple[list[str | None], str]:
     """Ordered group keys and the mode ('commesse' | 'tags' | 'plain')."""
     present = {b.assignment for b in day.blocks}
     if Config.COMMESSE:
-        order: list[str | None] = [c['name'] for c in Config.COMMESSE if c['name'] in present]
+        configured = [c['name'] for c in Config.COMMESSE if c['name'] in present]
+        # A block can carry a commessa no longer in the config (renamed/removed
+        # after the log was written, or picked ad hoc) — still show it, after
+        # the configured ones, instead of silently dropping it from the summary.
+        leftover = sorted(
+            (a for a in present if a and a not in configured),
+            key=lambda a: min(b.start for b in day.blocks if b.assignment == a),
+        )
+        order: list[str | None] = configured + leftover
         if None in present:
             order.append(None)
         return order, 'commesse'

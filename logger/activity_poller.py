@@ -19,7 +19,8 @@ Activity entry:
     "file":     "activity_poller.py",
     "branch":   "feature/KH-682-fix",      # configured repos only
     "wip_files": ["logger/x.py"],          # heartbeats only
-    "tags":     ["personal"]
+    "tags":     ["personal"],
+    "commessa": "Backend revamp"           # active commessa, if one is set (logger/active.py)
   }
 
 Browser entries never keep more than the privacy rules allow:
@@ -46,6 +47,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from config import MEETING_WINDOW_SIGNALS, Config
+from logger.active import active_commessa
 from logger.browser_reader import get_tab_info
 from logger.extractors import (
     RepoInfo,
@@ -181,21 +183,28 @@ def build_entry(front: FrontWindow, index: dict[str, RepoInfo], *, with_wip: boo
 
     kind = _classify(app, front.window)
     if kind == 'browser':
-        return _browser_entry(app, tab_fn)
+        entry = _browser_entry(app, tab_fn)
+    else:
+        entry = {'app': app, 'window': front.window, 'type': kind}
+        if kind == 'coding':
+            _attach_project(entry, front, index, cwd_fn, with_wip)
+        elif kind not in Config.REDACT_TITLE_TYPES:
+            repo = match_repo(index, '', front.window)
+            if repo and repo.tags:
+                entry['tags'] = list(repo.tags)
+        if kind in Config.REDACT_TITLE_TYPES:
+            entry['window'] = ''
 
-    entry: dict = {'app': app, 'window': front.window, 'type': kind}
-    if kind == 'coding':
-        _attach_project(entry, front, index, cwd_fn, with_wip)
-    elif kind not in Config.REDACT_TITLE_TYPES:
-        repo = match_repo(index, '', front.window)
-        if repo and repo.tags:
-            entry['tags'] = list(repo.tags)
-    if kind in Config.REDACT_TITLE_TYPES:
-        entry['window'] = ''
+    # The commessa the user picked from the UI (or set by hand) — takes
+    # priority over keyword-based assignment in the summarizer (see
+    # summarizer/sessions.py). None while no commessa is active.
+    commessa = active_commessa()
+    if commessa:
+        entry['commessa'] = commessa
     return entry
 
 
-_SIG_KEYS = ('app', 'window', 'type', 'domain', 'tab_title', 'url', 'project', 'file', 'excluded')
+_SIG_KEYS = ('app', 'window', 'type', 'domain', 'tab_title', 'url', 'project', 'file', 'excluded', 'commessa')
 
 
 def _signature(entry: dict) -> tuple:

@@ -164,6 +164,26 @@ class Assignment(unittest.TestCase):
         d = day(entries)
         self.assertEqual({b.assignment for b in d.blocks}, {'#ddh', None})
 
+    def test_logged_commessa_wins_over_keyword_match(self):
+        # written while "Solo" was active in a window that would otherwise match "Screening"
+        entries = [snap('09:00', project='KH-682', commessa='Solo'), marker('09:05', 'stop')]
+        d = day(entries, self.COMMESSE)
+        self.assertEqual({b.assignment for b in d.blocks}, {'Solo'})
+
+    def test_logged_commessa_wins_even_without_configured_commesse(self):
+        # ad-hoc picks (e.g. "Team management") work with no [[commesse]] configured too
+        entries = [snap('09:00', commessa='Team management'), marker('09:05', 'stop')]
+        d = day(entries)
+        self.assertEqual({b.assignment for b in d.blocks}, {'Team management'})
+
+    def test_switching_commessa_splits_the_block(self):
+        entries = [snap('09:00', commessa='Screening'), snap('09:05', commessa='Solo'),
+                   marker('09:10', 'stop')]
+        d = day(entries, self.COMMESSE)
+        assigned = {b.assignment: b.minutes for b in d.blocks}
+        self.assertAlmostEqual(assigned['Screening'], 5, places=1)
+        self.assertAlmostEqual(assigned['Solo'], 5, places=1)
+
 
 class Commits(unittest.TestCase):
     def test_commit_attaches_to_the_session_that_contains_it(self):
