@@ -1935,7 +1935,7 @@ _HTML = """<!DOCTYPE html>
     document.getElementById('commessa-modal-close').style.display = isSwitch ? '' : 'none';
     const list = document.getElementById('commessa-pick-list');
     list.innerHTML = '';
-    const picks = (r.commesse || []).filter(c => c.name !== r.name);
+    const picks = r.commesse || [];
     if (!picks.length) {
       list.innerHTML = '<p class="no-logs" style="margin:0">Nessuna commessa configurata.</p>';
     } else {
@@ -1950,6 +1950,14 @@ _HTML = """<!DOCTYPE html>
           span.className = 'commessa-pick-client';
           span.textContent = ' · ' + c.client;
           btn.appendChild(span);
+        }
+        if (c.name === r.name) {
+          btn.disabled = true;
+          btn.style.borderColor = 'var(--accent)';
+          const cur = document.createElement('span');
+          cur.className = 'commessa-pick-client';
+          cur.textContent = ' (attiva)';
+          btn.appendChild(cur);
         }
         btn.onclick = () => chooseCommessa(c.name);
         list.appendChild(btn);
