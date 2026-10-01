@@ -173,6 +173,16 @@ class ApiTest(unittest.TestCase):
         self.assertFalse(self.api.resume_tracking()['paused'])
         self.assertIn('capture_problem', self.api.status())
 
+    def test_stop_and_start_clear_a_manual_pause(self):
+        Config.ASK_COMMESSA_ON_START = False
+        self.api.pause_tracking(0)
+        self.api.stop()
+        self.assertFalse(self.api.status()['paused'])
+        self.api.pause_tracking(0)
+        self.api.start()
+        self.assertFalse(self.api.status()['paused'])
+        self.api._stop_process()
+
     # -- active commessa --------------------------------------------------------
 
     def test_start_is_blocked_until_a_commessa_is_chosen(self):

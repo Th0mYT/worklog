@@ -2843,6 +2843,7 @@ class _API:
         _active.set_active(name)
         self._manual_stop = False
         self._was_idle_stop = False
+        _pause.resume()  # an explicit start supersedes any manual pause
         self._start_process()
         return {"ok": True, **_active.active_state()}
 
@@ -2950,6 +2951,7 @@ class _API:
             return {"ok": False, "needs_commessa": True}
         self._manual_stop = False
         self._was_idle_stop = False
+        _pause.resume()  # an explicit start supersedes any manual pause
         self._start_process()
         return {"ok": True}
 
@@ -2957,6 +2959,7 @@ class _API:
         self._manual_stop = True
         self._was_idle_stop = False
         self._stop_process()
+        _pause.resume()  # stopped means stopped: don't leave a stale "Paused" behind
         return {"ok": True}
 
     def quit(self) -> None:
