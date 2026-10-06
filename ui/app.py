@@ -1423,7 +1423,7 @@ _HTML = """<!DOCTYPE html>
     <div class="section-title" id="commessa-modal-title">Su cosa stai lavorando?</div>
     <div class="commessa-pick-list" id="commessa-pick-list"></div>
     <div class="field-group" style="margin-bottom:8px">
-      <label class="field-label" for="commessa-new-name">Nuova commessa</label>
+      <label class="field-label" for="commessa-new-name">Nuova commessa (vuoto = senza commessa)</label>
       <input type="text" id="commessa-new-name" placeholder="es. Backend revamp">
     </div>
     <div class="field-group" style="margin-bottom:12px">
@@ -1878,8 +1878,8 @@ _HTML = """<!DOCTYPE html>
       document.getElementById('btn-start').disabled = s.running;
       document.getElementById('btn-stop').disabled  = !s.running && !isAutoPaused;
 
-      document.getElementById('commessa-row').style.display = s.active_commessa ? 'flex' : 'none';
-      document.getElementById('commessa-name').textContent = s.active_commessa || '—';
+      document.getElementById('commessa-row').style.display = s.needs_commessa ? 'none' : 'flex';
+      document.getElementById('commessa-name').textContent = s.active_commessa || 'Nessuna commessa';
       loadCommessaHours();
       const commessaModal = document.getElementById('commessa-modal');
       if (s.needs_commessa && commessaModal.style.display !== 'flex') {
@@ -1936,9 +1936,20 @@ _HTML = """<!DOCTYPE html>
     const list = document.getElementById('commessa-pick-list');
     list.innerHTML = '';
     const picks = r.commesse || [];
-    if (!picks.length) {
-      list.innerHTML = '<p class="no-logs" style="margin:0">Nessuna commessa configurata.</p>';
-    } else {
+    const none = document.createElement('button');
+    none.className = 'commessa-pick-btn';
+    none.textContent = 'Senza commessa';
+    if (isSwitch && !r.name) {
+      none.disabled = true;
+      none.style.borderColor = 'var(--accent)';
+      const cur = document.createElement('span');
+      cur.className = 'commessa-pick-client';
+      cur.textContent = ' (attiva)';
+      none.appendChild(cur);
+    }
+    none.onclick = () => chooseCommessa('');
+    list.appendChild(none);
+    {
       // built with the DOM (not innerHTML + inline onclick) so a name/client
       // containing a quote can never break out of an HTML attribute
       picks.forEach(c => {
@@ -1974,11 +1985,10 @@ _HTML = """<!DOCTYPE html>
 
   async function chooseCommessa(name, client) {
     name = (name || '').trim();
-    if (!name) return;
     try {
       await api.set_active_commessa(name, client || '');
       closeCommessaPicker();
-      showToast('Commessa: ' + name, 'ok');
+      showToast(name ? 'Commessa: ' + name : 'Tracciamento senza commessa', 'ok');
       await refresh();
     } catch (e) { showToast('Could not set the commessa', 'error'); }
   }
@@ -2807,15 +2817,14 @@ class _API:
     def _needs_commessa(self) -> bool:
         """True when tracking shouldn't (re)start until the user says what they're on.
 
-        Asked once per day: an active commessa picked earlier today is enough
-        to resume silently (e.g. after an idle auto-stop); a stale one from a
-        previous day, or none at all, needs a fresh pick.
+        Asked once per day: a choice made earlier today (a commessa, or
+        explicitly "no commessa") is enough to resume silently (e.g. after an
+        idle auto-stop); a stale one from a previous day, or none at all,
+        needs a fresh pick.
         """
         if not Config.ASK_COMMESSA_ON_START:
             return False
         state = _active.active_state()
-        if not state['name']:
-            return True
         since = parse_ts(state['since'])
         return not since or since.date() != datetime.now().date()
 
@@ -2827,20 +2836,21 @@ class _API:
     def set_active_commessa(self, name: str, client: str = '') -> dict:
         """Make `name` the active commessa and (re)start tracking under it.
 
+        A blank name means "track without a commessa": the choice is recorded
+        (so it isn't asked again today) but entries carry no commessa.
+
         A name not yet in Config.COMMESSE is added on the fly (empty keywords,
         editable later from Settings › Commesse) so picking it once is enough —
         no detour through Settings first.
         """
         name = (name or '').strip()
-        if not name:
-            return {"ok": False, "error": "empty"}
-        if not any(c['name'] == name for c in Config.COMMESSE):
+        if name and not any(c['name'] == name for c in Config.COMMESSE):
             settings = self.get_settings()
             settings['commesse'] = settings['commesse'] + [
                 {'name': name, 'client': (client or '').strip(), 'keywords': [], 'archived': False}
             ]
             self.save_settings(settings)
-        _active.set_active(name)
+        _active.set_active(name)  # blank → explicit "no commessa"
         self._manual_stop = False
         self._was_idle_stop = False
         _pause.resume()  # an explicit start supersedes any manual pause
