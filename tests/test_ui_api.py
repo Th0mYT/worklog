@@ -201,6 +201,17 @@ class ApiTest(unittest.TestCase):
         self.assertTrue(st['running'])
         self.api._stop_process()
 
+    def test_can_start_without_a_commessa(self):
+        self.api.save_settings(self.api.get_settings())
+        self.assertTrue(self.api.status()['needs_commessa'])
+        chosen = self.api.set_active_commessa('')
+        self.assertTrue(chosen['ok'])
+        st = self.api.status()
+        self.assertIsNone(st['active_commessa'])
+        self.assertFalse(st['needs_commessa'])
+        self.assertTrue(st['running'])
+        self.api._stop_process()
+
     def test_set_active_commessa_adds_an_unknown_name_to_config(self):
         self.api.save_settings(self.api.get_settings())
         self.api.set_active_commessa('Team management')
