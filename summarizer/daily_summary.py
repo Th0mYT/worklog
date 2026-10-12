@@ -119,6 +119,18 @@ def _format_block(block_id: str, b: Block) -> str:
     return '\n'.join(lines)
 
 
+_LANGUAGE_NAMES = {'it': 'Italian', 'en': 'English', 'fr': 'French', 'de': 'German', 'es': 'Spanish'}
+
+
+def _language_rule() -> str:
+    lang = Config.SUMMARY_LANGUAGE
+    if not lang:
+        return '7. Write in the language of the commit messages / user notes (English if there are none).'
+    name = _LANGUAGE_NAMES.get(lang.lower(), lang)
+    return (f'7. Write every description in {name}, whatever language the commits and notes are in. '
+            f'Keep identifiers, branch names and ticket ids as they are.')
+
+
 def build_prompt(target: date, day: DayModel) -> str:
     blocks = '\n\n'.join(_format_block(_block_id(i), b) for i, b in enumerate(day.blocks, 1))
     return f"""You are helping write a timesheet for {target}.
@@ -143,7 +155,7 @@ RULES:
    (e.g. "Development work on <project>").
 6. Do not include durations, times or block ids inside the description. No headers,
    no totals, no commentary.
-7. Write in the language of the commit messages / user notes (English if there are none).
+{_language_rule()}
 
 BLOCKS:
 {blocks}
@@ -262,7 +274,7 @@ def _describe_exclusions(day: DayModel) -> list[str]:
     labels = {
         'private': 'private browsing', 'personal-domain': 'personal sites',
         'unclassified-domain': 'unclassified sites', 'marked-personal': 'entries marked personal',
-        'ignored-app': 'ignored apps', 'short': 'blocks under 5 min',
+        'ignored-app': 'ignored apps', 'personal-project': 'personal projects', 'short': 'blocks under 5 min',
     }
     lines = []
     parts = [f'{labels.get(k, k)} {_fmt_minutes(m)}' for k, m in day.excluded_minutes.most_common() if m >= 1]

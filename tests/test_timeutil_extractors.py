@@ -158,3 +158,10 @@ class ReviewRegressions(unittest.TestCase):
         tab = parse_tab_output('a|||b|||https://x.com|||incognito')
         self.assertTrue(tab.private)
         self.assertEqual((tab.title, tab.url), ('a|||b', 'https://x.com'))
+
+
+class CommessaKeywords(unittest.TestCase):
+    def test_semicolon_and_comma_separated_keywords_are_split(self):
+        from config import _normalize_commesse
+        out = _normalize_commesse([{'name': 'K', 'keywords': ['a-b; c-d;', 'e, f', 'a-b']}])
+        self.assertEqual(out[0]['keywords'], ['a-b', 'c-d', 'e', 'f'])

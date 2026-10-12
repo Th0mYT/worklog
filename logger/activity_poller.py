@@ -39,6 +39,7 @@ manual pause (logger/pause.py).
 import ctypes
 import ctypes.util
 import json
+import re
 import signal
 import sys
 import threading
@@ -52,6 +53,7 @@ from logger.browser_reader import get_tab_info
 from logger.extractors import (
     RepoInfo,
     build_repo_index,
+    canonical_app,
     classify_domain,
     domain_of,
     find_repo_root,
@@ -93,9 +95,9 @@ def _system_idle_seconds() -> float:
 # ---------------------------------------------------------------------------
 
 def _classify(app: str, window: str) -> str:
-    app_lower = app.lower()
+    app_lower = canonical_app(app)
     for category, apps in Config.CATEGORIES.items():
-        if any(app_lower == a.lower() for a in apps):
+        if any(app_lower == canonical_app(a) for a in apps):
             if category == 'meeting':
                 return _resolve_meeting(app, window)
             return category
@@ -207,8 +209,17 @@ def build_entry(front: FrontWindow, index: dict[str, RepoInfo], *, with_wip: boo
 _SIG_KEYS = ('app', 'window', 'type', 'domain', 'tab_title', 'url', 'project', 'file', 'excluded', 'commessa')
 
 
+# Animated glyphs some tools (Claude Code, spinners in terminal titles) cycle through
+# in the window title: they change every few seconds without meaning anything.
+_SPINNER = re.compile('[\u2800-\u28ff\u25d0-\u25d3\u2722-\u2736\u273b\u273d]')
+
+
 def _signature(entry: dict) -> tuple:
-    return tuple(entry.get(k) for k in _SIG_KEYS)
+    sig = [entry.get(k) for k in _SIG_KEYS]
+    window = entry.get('window')
+    if window:
+        sig[_SIG_KEYS.index('window')] = re.sub(r'\s+', ' ', _SPINNER.sub('', window)).strip()
+    return tuple(sig)
 
 
 # ---------------------------------------------------------------------------

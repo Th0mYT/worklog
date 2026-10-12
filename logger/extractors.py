@@ -243,6 +243,17 @@ def keeps_detail(site_class: str, unknown_policy: str) -> bool:
 # Terminal helpers
 # ---------------------------------------------------------------------------
 
+# macOS reports the localized app name ("Terminale" on an Italian system), but
+# categories and the tty lookup are keyed on the English one.
+_APP_ALIASES = {'terminale': 'terminal', 'terminal.app': 'terminal'}
+
+
+def canonical_app(app: str) -> str:
+    """Lowercase app name with localized variants folded onto the English one."""
+    name = (app or '').strip().lower()
+    return _APP_ALIASES.get(name, name)
+
+
 def parse_lsof_cwd(output: str) -> str:
     """Extract the path from `lsof -Fn` output (the line starting with 'n')."""
     for line in (output or '').splitlines():

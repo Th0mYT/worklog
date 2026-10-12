@@ -25,7 +25,7 @@ def commit(hhmm, repo='api', message='feat: x', **extra):
 
 def day(entries, commesse=None, **kw):
     return build_day(entries, commesse=commesse or [], rules=RULES, unknown_policy='hide',
-                     heartbeat=300, **kw)
+                     heartbeat=300, repo_index={}, **kw)
 
 
 class Durations(unittest.TestCase):
@@ -170,6 +170,28 @@ class Assignment(unittest.TestCase):
         d = day(entries, self.COMMESSE)
         self.assertEqual({b.assignment for b in d.blocks}, {'Solo'})
 
+    def test_project_of_another_commessa_beats_a_stale_active_pick(self):
+        # picker left on "Screening" while working in the Tech4All repo
+        entries = [snap('09:00', project='libertas-tech4all', commessa='Screening'), marker('09:05', 'stop')]
+        d = day(entries, self.COMMESSE)
+        self.assertEqual({b.assignment for b in d.blocks}, {'Tech4All'})
+
+    def test_window_title_match_does_not_override_the_pick(self):
+        entries = [snap('09:00', window='KH-682 notes', commessa='Tech4All'), marker('09:05', 'stop')]
+        d = day(entries, self.COMMESSE)
+        self.assertEqual({b.assignment for b in d.blocks}, {'Tech4All'})
+
+    def test_personal_tagged_work_is_left_out_and_counted(self):
+        entries = [snap('09:00', project='nordock', tags=['Personal'], commessa='Screening'),
+                   snap('09:05', project='api'), marker('09:10', 'stop')]
+        d = day(entries, self.COMMESSE)
+        self.assertAlmostEqual(d.excluded_minutes['personal-project'], 5, places=1)
+        self.assertAlmostEqual(sum(b.minutes for b in d.blocks), 5, places=1)
+
+    def test_personal_tagged_commit_is_dropped(self):
+        d = day([snap('09:00'), commit('09:05', repo='nordock', tags=['personal']), marker('09:10', 'stop')])
+        self.assertEqual(sum(len(b.commits) for b in d.blocks), 0)
+
     def test_logged_commessa_wins_even_without_configured_commesse(self):
         # ad-hoc picks (e.g. "Team management") work with no [[commesse]] configured too
         entries = [snap('09:00', commessa='Team management'), marker('09:05', 'stop')]
@@ -246,3 +268,22 @@ class HeartbeatFromLog(unittest.TestCase):
                    marker('09:20', 'stop')]
         d = build_day(entries, commesse=[], rules=RULES, unknown_policy='hide', heartbeat=300)
         self.assertAlmostEqual(sum(s.minutes for b in d.blocks for s in b.samples), 20, places=1)
+
+
+class LegacyEntries(unittest.TestCase):
+    def test_window_title_naming_a_personal_repo_is_resolved_from_today_config(self):
+        from logger.extractors import RepoInfo
+        index = {'nordock': RepoInfo('nordock', '/x/nordock', ['Personal'])}
+        entries = [snap('09:00', app='Terminale', typ='other', window='nordock — claude'), marker('09:05', 'stop')]
+        d = build_day(entries, commesse=[], rules=RULES, unknown_policy='hide', heartbeat=300, repo_index=index)
+        self.assertEqual(d.blocks, [])
+        self.assertAlmostEqual(d.excluded_minutes['personal-project'], 5, places=1)
+
+    def test_repo_name_alone_is_enough_when_config_says_personal(self):
+        from logger.extractors import RepoInfo
+        index = {'nordock': RepoInfo('nordock', '/x/nordock', ['Personal'])}
+        entries = [snap('09:00', project='nordock'), snap('09:05', tags=['nordock']),
+                   marker('09:10', 'stop')]
+        d = build_day(entries, commesse=[], rules=RULES, unknown_policy='hide', heartbeat=300, repo_index=index)
+        self.assertEqual(d.blocks, [])
+        self.assertAlmostEqual(d.excluded_minutes['personal-project'], 10, places=1)

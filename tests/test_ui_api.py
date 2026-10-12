@@ -233,3 +233,56 @@ class ApiTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ManualBlocks(ApiTest):
+    def test_hours_and_commessa_become_a_range_block_on_that_commessa(self):
+        r = self.api.add_entry(D, '18:00', 'other', note='Call con il cliente', commessa='Agenas', hours=1.5)
+        self.assertTrue(r['ok'])
+        e = self.read_log()[-1]
+        self.assertEqual(e['end_ts'], f'{D}T19:30:00')
+        self.assertEqual(e['commessa'], 'Agenas')
+        self.assertTrue(e['manual'])
+
+    def test_end_time_wins_over_hours(self):
+        self.api.add_entry(D, '10:00', 'other', end_time='11:00', hours=3)
+        self.assertEqual(self.read_log()[-1]['end_ts'], f'{D}T11:00:00')
+
+    def test_block_cannot_cross_midnight_or_be_negative(self):
+        self.assertFalse(self.api.add_entry(D, '23:00', 'other', hours=2)['ok'])
+        self.assertFalse(self.api.add_entry(D, '10:00', 'other', hours=-1)['ok'])
+        self.assertFalse((self.logs / f'{D}.jsonl').exists())
+
+    def test_no_commessa_means_no_field(self):
+        self.api.add_entry(D, '10:00', 'other', end_time='10:30')
+        self.assertNotIn('commessa', self.read_log()[-1])
+
+    def test_manual_block_reaches_the_summary_on_its_commessa(self):
+        from summarizer.sessions import build_day
+        self.api.add_entry(D, '18:00', 'other', note='Call con il cliente', commessa='Agenas', hours=1.5)
+        day = build_day(self.read_log(), commesse=[], rules={}, unknown_policy='hide', heartbeat=300, repo_index={})
+        self.assertEqual([(b.assignment, b.hours) for b in day.blocks], [('Agenas', 1.5)])
+        self.assertEqual(day.blocks[0].notes(), ['Call con il cliente'])
+
+    def test_timesheet_template_survives_a_settings_save(self):
+        self.cfg_path.write_text('timesheet_template = "/x/Ottobre.xlsx"\n')
+        s = self.api.get_settings()
+        self.api.save_settings(s)
+        self.assertEqual(tomllib.loads(self.cfg_path.read_text()).get('timesheet_template'), '/x/Ottobre.xlsx')
+
+
+class EmbeddedScript(unittest.TestCase):
+    def test_ui_javascript_parses(self):
+        # A stray "\n" in the non-raw HTML string once split a regex literal across two
+        # lines: the whole page script died and the window sat on "Loading…".
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node not installed')
+        js = app._HTML.split('<script>', 1)[1].rsplit('</script>', 1)[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / 'ui.js'
+            f.write_text(js)
+            r = subprocess.run([node, '--check', str(f)], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)

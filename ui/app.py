@@ -1400,6 +1400,12 @@ _HTML = """<!DOCTYPE html>
           <input type="time" id="add-time" title="Start time">
           <span class="add-time-sep">–</span>
           <input type="time" id="add-end-time" title="End time (optional — leave empty for a single point-in-time record)">
+          <input type="number" id="add-hours" min="0" max="12" step="0.25" placeholder="or hours"
+                 title="Duration in hours, used when there is no end time" style="width:84px">
+        </div>
+        <div class="add-record-row">
+          <select id="add-commessa" class="inline" title="Commessa of this block"></select>
+          <span class="add-time-sep">replaces tracked time in the same range</span>
         </div>
         <input type="text" id="add-note" class="add-note-input" maxlength="500"
                placeholder="What did you do? (optional — e.g. &quot;Worked on the API redesign&quot;)">
@@ -1668,7 +1674,7 @@ _HTML = """<!DOCTYPE html>
         name,
         client: (row.querySelector('.com-client')?.value || '').trim(),
         keywords: (row.querySelector('.com-keywords')?.value || '')
-                    .split(',').map(k => k.trim()).filter(Boolean),
+                    .split(/[,;\\n]/).map(k => k.trim()).filter(Boolean),
         archived: !!row.querySelector('.com-archived')?.checked,
       });
     });
@@ -2413,6 +2419,7 @@ _HTML = """<!DOCTYPE html>
           (win ? `<div class="detail-sub">${_esc(win)}</div>` : '') +
           (url ? `<div class="detail-sub" style="-webkit-user-select:text;user-select:text">${_esc(url)}</div>` : '') +
           (note ? `<div class="detail-sub">${_esc(note)}</div>` : '') +
+          (e.manual && e.commessa ? `<div class="detail-sub">${_esc(e.commessa)}</div>` : '') +
           _siteRow(e) +
           _excludedLabel(e) +
           _tagsSection(e, date) +
@@ -2490,7 +2497,15 @@ _HTML = """<!DOCTYPE html>
         ? String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0')
         : '12:00';
     document.getElementById('add-end-time').value = '';
+    document.getElementById('add-hours').value = '';
     document.getElementById('add-note').value = '';
+    try {
+      const a = await api.get_active_commessa();
+      const csel = document.getElementById('add-commessa');
+      csel.innerHTML = '<option value="">(no commessa)</option>' +
+        (a.commesse || []).map(c => `<option value="${_esc(c.name)}">${_esc(c.name)}</option>`).join('');
+      csel.value = a.name || '';
+    } catch (e) {}
     form.style.display = 'flex';
   }
 
@@ -2499,14 +2514,16 @@ _HTML = """<!DOCTYPE html>
     const time = document.getElementById('add-time').value;
     const endTime = document.getElementById('add-end-time').value;
     const note = document.getElementById('add-note').value.trim();
+    const hours = parseFloat(document.getElementById('add-hours').value) || 0;
+    const commessa = document.getElementById('add-commessa').value;
     if (!type)  { showToast('Pick a category', 'error'); return; }
     if (!time)  { showToast('Pick a start time', 'error'); return; }
     if (endTime && endTime <= time) { showToast('End time must be after start time', 'error'); return; }
-    const r = await api.add_entry(_detailDate, time, type, endTime, note);
+    const r = await api.add_entry(_detailDate, time, type, endTime, note, commessa, hours);
     if (!r || !r.ok) { showToast((r && r.error) || 'Failed to add record', 'error'); return; }
     hideAddRecord();
     await showLogDetail(_detailDate);
-    showToast(endTime ? 'Block added' : 'Record added', 'ok');
+    showToast(endTime || hours ? 'Block added' : 'Record added', 'ok');
   }
 
   async function showLogDetail(date, refreshOnly = false) {
@@ -2587,7 +2604,7 @@ def _build_toml(d: dict) -> str:
         f'ask_commessa_on_start = {"true" if d.get("ask_commessa_on_start", True) else "false"}',
     ]
     # Keys this UI has no field for must survive a save instead of being wiped.
-    for key in ('summaries_dir', 'anthropic_api_key', 'anthropic_model'):
+    for key in ('summaries_dir', 'timesheet_template', 'summary_language', 'anthropic_api_key', 'anthropic_model'):
         if d.get(key):
             lines.append(f'{key} = {_toml_str(d[key])}')
     repos = d.get('git_repos') or []
@@ -2689,7 +2706,7 @@ def _config_file() -> dict:
 def _preserved_keys() -> dict:
     """Config keys the settings screen has no field for; carried over so a save doesn't wipe them."""
     existing = _config_file()
-    return {k: existing[k] for k in ('summaries_dir', 'anthropic_api_key', 'anthropic_model')
+    return {k: existing[k] for k in ('summaries_dir', 'timesheet_template', 'summary_language', 'anthropic_api_key', 'anthropic_model')
             if isinstance(existing.get(k), str) and existing[k]}
 
 
@@ -3284,7 +3301,8 @@ class _API:
         from config import DEFAULT_CATEGORIES
         return {"categories": {k: list(v) for k, v in DEFAULT_CATEGORIES.items()}}
 
-    def add_entry(self, date: str, time: str, type: str, end_time: str = '', note: str = '') -> dict:
+    def add_entry(self, date: str, time: str, type: str, end_time: str = '', note: str = '',
+                  commessa: str = '', hours: float = 0) -> dict:
         """Append a manually-created record to a day's log.
 
         `date` is YYYY-MM-DD, `time` is HH:MM, `type` is a category name chosen
@@ -3296,6 +3314,12 @@ class _API:
         (optional free text) describes what was done; it is passed through
         verbatim into the summarizer prompt instead of the usual app/window
         label.
+
+        `commessa` (optional) assigns the block directly, like an entry the
+        poller wrote under that active commessa. `hours` (optional, used when
+        there is no `end_time`) sets the end for you — the quick way to record
+        work done away from the computer. A block replaces any tracked time it
+        overlaps, so pick a stretch the poller did not see (idle, paused, off).
         """
         cat = str(type or '').strip()
         if not cat:
@@ -3311,6 +3335,7 @@ class _API:
             'manual': True,
         }
 
+        end_ts = None
         if end_time:
             try:
                 end_ts = datetime.strptime(f"{date} {end_time}", "%Y-%m-%d %H:%M")
@@ -3318,7 +3343,23 @@ class _API:
                 return {"ok": False, "error": "invalid end time"}
             if end_ts <= ts:
                 return {"ok": False, "error": "end time must be after start time"}
+        else:
+            try:
+                hours = float(hours or 0)
+            except (ValueError, TypeError):
+                return {"ok": False, "error": "invalid hours"}
+            if hours < 0:
+                return {"ok": False, "error": "invalid hours"}
+            if hours:
+                end_ts = ts + timedelta(hours=hours)
+                if end_ts.date() != ts.date():
+                    return {"ok": False, "error": "the block must end on the same day"}
+        if end_ts:
             entry['end_ts'] = end_ts.isoformat(timespec='seconds')
+
+        commessa = str(commessa or '').strip()
+        if commessa:
+            entry['commessa'] = commessa
 
         note = str(note or '').strip()
         if note:
@@ -3359,7 +3400,8 @@ class _API:
         return {"ok": r.returncode == 0, "output": output}
 
     def copy_to_clipboard(self, text: str) -> dict:
-        r = subprocess.run(['pbcopy'], input=text, text=True, encoding='utf-8')
+        # A GUI app has no UTF-8 locale of its own: without one pbcopy decodes as MacRoman.
+        r = subprocess.run(['pbcopy'], input=text, text=True, encoding='utf-8', env=self._subprocess_env())
         return {"ok": r.returncode == 0}
 
     def get_prompt_preview(self, date: str = '') -> dict:

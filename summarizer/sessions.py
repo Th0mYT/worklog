@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from config import Config
-from logger.extractors import classify_domain, domain_of, keeps_detail
+from logger.extractors import build_repo_index, classify_domain, domain_of, keeps_detail, match_repo
 from logger.timeutil import parse_ts
 
 SESSION_GAP = timedelta(minutes=30)
@@ -273,10 +273,43 @@ def _subtract(start: datetime, end: datetime, cutters) -> list[tuple[datetime, d
     return pieces
 
 
-def _verdict(entry: dict, rules, unknown_policy) -> tuple[bool, str, str]:
+def _with_repo(entry: dict, index: dict) -> dict:
+    """Entries logged before a window was resolved to a repo (e.g. a localized terminal
+    app) get the project/tags a title like "nordock — …" points at, judged by today's config."""
+    if entry.get('project') or entry.get('tags') or entry.get('type') == 'browser' or not index:
+        return entry
+    repo = match_repo(index, '', entry.get('window') or '')
+    if not repo:
+        return entry
+    enriched = dict(entry, project=repo.name)
+    if repo.tags:
+        enriched['tags'] = list(repo.tags)
+    return enriched
+
+
+def _personal_names(index: dict) -> set[str]:
+    return {name for name, r in index.items() if any(str(t).strip().lower() == 'personal' for t in r.tags)}
+
+
+def _is_personal(entry: dict, names: frozenset | set = frozenset()) -> bool:
+    """Work in a repo the user tagged 'personal' never belongs on a client timesheet.
+
+    Besides the entry's own tags, an old log may carry only the repo name (as project
+    or as a tag from an earlier config): it is judged by today's config.
+    """
+    tags = [str(t).strip().lower() for t in entry.get('tags') or []]
+    if 'personal' in tags:
+        return True
+    return bool(names) and (str(entry.get('project') or entry.get('repo') or '').lower() in names
+                            or any(t in names for t in tags))
+
+
+def _verdict(entry: dict, rules, unknown_policy, personal=frozenset()) -> tuple[bool, str, str]:
     """(kept, reason, domain) for a sample — reason is why it was dropped."""
     if entry.get('excluded'):
         return False, entry.get('reason') or 'marked-personal', ''
+    if _is_personal(entry, personal):
+        return False, 'personal-project', ''
     if entry.get('type') == 'browser':
         domain = entry.get('domain') or domain_of(entry.get('url', ''))
         cls = classify_domain(domain, rules) if domain else 'unknown'
@@ -292,12 +325,16 @@ def _verdict(entry: dict, rules, unknown_policy) -> tuple[bool, str, str]:
 
 def build_day(entries: list[dict], *, commesse: list[dict] | None = None,
               rules: dict | None = None, unknown_policy: str | None = None,
-              heartbeat: int | None = None) -> DayModel:
+              heartbeat: int | None = None, repo_index: dict | None = None) -> DayModel:
     commesse = Config.COMMESSE if commesse is None else commesse
     rules = Config.BROWSER_RULES if rules is None else rules
     unknown_policy = Config.BROWSER_UNKNOWN if unknown_policy is None else unknown_policy
     heartbeat = Config.POLL_INTERVAL if heartbeat is None else heartbeat
+    if repo_index is None:
+        repo_index = build_repo_index(Config.GIT_REPOS, Config.GIT_WORKSPACES, Config.GIT_REPO_TAGS)
     assign_commessa = make_assigner(commesse)
+    keyed = {c['name'] for c in commesse if c.get('keywords')}
+    personal = _personal_names(repo_index)
 
     logged_heartbeats: list[float] = []
     timeline: list[tuple[datetime, dict]] = []
@@ -314,14 +351,14 @@ def build_day(entries: list[dict], *, commesse: list[dict] | None = None,
             if isinstance(e.get('heartbeat'), (int, float)) and e['heartbeat'] > 0:
                 logged_heartbeats.append(e['heartbeat'])
         elif e.get('source') == 'git':
-            if not e.get('excluded'):
+            if not e.get('excluded') and not _is_personal(e, personal):
                 commits.append(Commit(ts, e))
         elif e.get('manual') and e.get('end_ts'):
             end = parse_ts(e['end_ts'])
             if end and end > ts:
                 manual.append((ts, end, e))
         else:
-            timeline.append((ts, e))
+            timeline.append((ts, _with_repo(e, repo_index)))
 
     # The poller that wrote the log may have used a longer heartbeat than the current config.
     heartbeat = max([heartbeat, *logged_heartbeats])
@@ -339,7 +376,7 @@ def build_day(entries: list[dict], *, commesse: list[dict] | None = None,
     def add_sample(start: datetime, end: datetime, entry: dict, cut: bool) -> None:
         pieces = _subtract(start, end, manual_spans) if cut else [(start, end)]
         for a, b in pieces:
-            kept, reason, domain = _verdict(entry, rules, unknown_policy)
+            kept, reason, domain = _verdict(entry, rules, unknown_policy, personal)
             minutes = (b - a).total_seconds() / 60
             if not kept:
                 excluded[reason] += minutes
@@ -364,9 +401,9 @@ def build_day(entries: list[dict], *, commesse: list[dict] | None = None,
     # --- assignment -----------------------------------------------------------
     tag_mode = not commesse
     for s in samples:
-        s.assignment = _assignment(s.entry, _sample_texts(s.entry), assign_commessa, tag_mode)
+        s.assignment = _assignment(s.entry, _sample_texts(s.entry), assign_commessa, tag_mode, keyed)
     for c in commits:
-        c.assignment = _assignment(c.entry, _commit_texts(c.entry), assign_commessa, tag_mode)
+        c.assignment = _assignment(c.entry, _commit_texts(c.entry), assign_commessa, tag_mode, keyed)
     commits.sort(key=lambda c: c.ts)
     if not tag_mode:
         _inherit_from_commits(samples, commits)
@@ -405,11 +442,20 @@ def build_day(entries: list[dict], *, commesse: list[dict] | None = None,
     return DayModel(kept, excluded, unclassified)
 
 
-def _assignment(entry: dict, texts: list, assign_commessa, tag_mode: bool) -> str | None:
+def _assignment(entry: dict, texts: list, assign_commessa, tag_mode: bool,
+                keyed: frozenset | set = frozenset()) -> str | None:
     # An entry the poller wrote while a commessa was active carries it directly
-    # (logger/active.py) — that explicit choice always wins over keyword rules.
+    # (logger/active.py) and that choice wins over keyword rules in window titles,
+    # tabs and notes. One exception: when the repo/project/branch itself belongs to
+    # *another* commessa by keyword (the picker was simply left on the previous
+    # one), the structural evidence wins. Ad hoc picks with no keywords of their
+    # own ("Team management") are never overridden.
     commessa = entry.get('commessa')
     if commessa:
+        if not tag_mode and commessa in keyed:
+            evidence = assign_commessa([entry.get('project'), entry.get('repo'), entry.get('branch')])
+            if evidence and evidence != commessa:
+                return evidence
         return commessa
     tags = entry.get('tags') or []
     if tag_mode:

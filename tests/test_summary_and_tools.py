@@ -223,3 +223,14 @@ class Redaction(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class LanguageRule(unittest.TestCase):
+    def test_prompt_follows_the_configured_language(self):
+        from unittest import mock
+        from config import Config
+        from summarizer import daily_summary as ds
+        with mock.patch.object(Config, 'SUMMARY_LANGUAGE', 'it'):
+            self.assertIn('Write every description in Italian', ds._language_rule())
+        with mock.patch.object(Config, 'SUMMARY_LANGUAGE', ''):
+            self.assertIn('language of the commit messages', ds._language_rule())

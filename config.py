@@ -13,6 +13,7 @@ Copy worklog.example.toml → ~/.worklog/config.toml to get started.
 """
 
 import os
+import re
 import tomllib
 from pathlib import Path
 
@@ -103,6 +104,17 @@ def _normalize_categories(raw) -> dict[str, list[str]]:
     return result or {k: list(v) for k, v in DEFAULT_CATEGORIES.items()}
 
 
+def _split_keywords(values: list) -> list[str]:
+    """Flatten keyword entries, splitting on ',' ';' and newlines (a pasted 'a; b' is two keywords)."""
+    out: list[str] = []
+    for v in values:
+        for k in re.split(r'[,;\n]', str(v)):
+            k = k.strip()
+            if k and k not in out:
+                out.append(k)
+    return out
+
+
 def _normalize_commesse(raw) -> list[dict]:
     """Coerce a user-supplied [[commesse]] array into [{name, client, keywords, archived}].
 
@@ -125,7 +137,9 @@ def _normalize_commesse(raw) -> list[dict]:
         seen.add(name)
         client = str(item.get('client', '')).strip()
         keywords = item.get('keywords')
-        keywords = [str(k).strip() for k in keywords if str(k).strip()] if isinstance(keywords, list) else []
+        if isinstance(keywords, str):
+            keywords = [keywords]
+        keywords = _split_keywords(keywords) if isinstance(keywords, list) else []
         result.append({'name': name, 'client': client, 'keywords': keywords,
                         'archived': bool(item.get('archived'))})
     return result
@@ -177,6 +191,8 @@ class Config:
     CATEGORIES: dict[str, list[str]] = _normalize_categories(_cfg.get('categories'))
     LOGS_DIR: str           = str(Path(_cfg.get('logs_dir', '~/.worklog/logs')).expanduser())
     SUMMARIES_DIR: str      = str(Path(_cfg.get('summaries_dir', '~/.worklog/summaries')).expanduser())
+    # A month of the shared timesheet workbook, used as the layout for `timesheet_export`.
+    TIMESHEET_TEMPLATE: str = str(Path(_cfg['timesheet_template']).expanduser()) if _cfg.get('timesheet_template') else ''
     # Heartbeat: the poller writes a fresh entry at least this often, even if
     # nothing changed. Between heartbeats it only writes when the app/window changes.
     POLL_INTERVAL: int      = int(_cfg.get('poll_interval', 300))
@@ -204,6 +220,9 @@ class Config:
     ASK_COMMESSA_ON_START: bool = bool(_cfg.get('ask_commessa_on_start', True))
 
     # Summarizer
+    # Language the block descriptions are written in ('it', 'en', 'Italian', …). Blank
+    # follows the language of the commit messages / notes, which mixes languages.
+    SUMMARY_LANGUAGE: str   = str(_cfg.get('summary_language', '') or '').strip()
     SUMMARIZER_BACKEND: str = _cfg.get('summarizer_backend', 'ollama')
     OLLAMA_URL: str         = _cfg.get('ollama_url', 'http://localhost:11434')
     OLLAMA_MODEL: str       = _cfg.get('ollama_model', 'qwen2.5:7b')

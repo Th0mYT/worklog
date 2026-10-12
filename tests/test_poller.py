@@ -119,6 +119,24 @@ class BuildEntry(unittest.TestCase):
         self.assertEqual(e['project'], 'khero-backend')
         self.assertEqual(e['tags'], ['ddh', 'backend'])
 
+    def test_localized_terminal_name_is_classified_and_resolved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / 'khero-backend'
+            (repo / '.git').mkdir(parents=True)
+            with mock.patch.object(ap, 'current_branch', return_value=''), \
+                 patch_config(CATEGORIES={'coding': ['Terminal']}):
+                e = ap.build_entry(FrontWindow(app='Terminale', window='zsh'), INDEX,
+                                   tab_fn=lambda a: None, cwd_fn=lambda a: str(repo))
+        self.assertEqual(e['type'], 'coding')
+        self.assertEqual(e['project'], 'khero-backend')
+
+    def test_spinner_glyphs_do_not_change_the_signature(self):
+        a = {'app': 'Terminale', 'window': 'agenas — ◐ Task — claude', 'type': 'coding'}
+        b = {'app': 'Terminale', 'window': 'agenas — ✳ Task — claude', 'type': 'coding'}
+        c = {'app': 'Terminale', 'window': 'agenas — ✳ Other — claude', 'type': 'coding'}
+        self.assertEqual(ap._signature(a), ap._signature(b))
+        self.assertNotEqual(ap._signature(a), ap._signature(c))
+
     def test_active_commessa_is_attached_when_set(self):
         active.set_active('Backend revamp')
         e = self.build('WebStorm', 'x.ts')

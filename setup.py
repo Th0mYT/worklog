@@ -8,6 +8,8 @@ OPTIONS = {
     'packages': [
         'webview',
         'pynput',
+        'openpyxl',
+        'et_xmlfile',
         'logger',
         'summarizer',
         'ui',

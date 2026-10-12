@@ -13,7 +13,7 @@ Needs the same Automation permission the browser reader already asks for.
 
 import subprocess
 
-from logger.extractors import parse_lsof_cwd, pick_foreground_pid
+from logger.extractors import canonical_app, parse_lsof_cwd, pick_foreground_pid
 
 _TTY_SCRIPTS: dict[str, str] = {
     'terminal': 'tell application "Terminal" to return tty of selected tab of front window',
@@ -31,7 +31,7 @@ def _run(cmd: list[str], timeout: float = 3) -> str:
 
 def terminal_cwd(app: str) -> str:
     """cwd of the foreground process in the frontmost tab of `app`, or ''."""
-    script = _TTY_SCRIPTS.get(app.lower())
+    script = _TTY_SCRIPTS.get(canonical_app(app))
     if not script:
         return ''
     tty = _run(['osascript', '-e', script]).strip()
