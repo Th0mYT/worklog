@@ -165,3 +165,13 @@ class CommessaKeywords(unittest.TestCase):
         from config import _normalize_commesse
         out = _normalize_commesse([{'name': 'K', 'keywords': ['a-b; c-d;', 'e, f', 'a-b']}])
         self.assertEqual(out[0]['keywords'], ['a-b', 'c-d', 'e', 'f'])
+
+
+class IdeNonProject(unittest.TestCase):
+    def test_welcome_and_dialog_titles_are_not_projects(self):
+        from logger.extractors import parse_ide_title
+        self.assertEqual(parse_ide_title('PyCharm', 'Welcome to PyCharm'), ('', ''))
+        self.assertEqual(parse_ide_title('WebStorm', 'Patch Applying Partly Failed'), ('', ''))
+        self.assertEqual(parse_ide_title('PyCharm', 'Open File or Project'), ('', ''))
+        self.assertEqual(parse_ide_title('WebStorm', 'khero-angular – app.ts')[0], 'khero-angular')
+        self.assertEqual(parse_ide_title('WebStorm', 'open-source-site – app.ts')[0], 'open-source-site')

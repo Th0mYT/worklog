@@ -36,6 +36,10 @@ _TITLE_NOISE = re.compile(
 _PATH_BRACKET = re.compile(r'\s*\[[^\]]*\]\s*$')
 
 
+# Start screens and dialogs show up in the title where the project name would be.
+IDE_NON_PROJECT = re.compile(r'^(welcome to\b|patch applying\b|project structure\b|settings\b|preferences\b|open( file or project)?$|new project$)', re.IGNORECASE)
+
+
 def _split_title(window: str) -> list[str]:
     parts = [window]
     for sep in _SEPARATORS:
@@ -91,7 +95,7 @@ def parse_ide_title(app: str, window: str) -> tuple[str, str]:
         return '', ''
 
     file = file.rsplit('/', 1)[-1]
-    if project.lower() == app_l:
+    if project.lower() == app_l or IDE_NON_PROJECT.match(project):
         project = ''
     return project, file
 

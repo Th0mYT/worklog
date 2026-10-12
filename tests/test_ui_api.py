@@ -286,3 +286,55 @@ class EmbeddedScript(unittest.TestCase):
             f.write_text(js)
             r = subprocess.run([node, '--check', str(f)], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
+
+
+class ExportApi(ApiTest):
+    def setUp(self):
+        super().setUp()
+        import openpyxl
+        root = Path(self.tmp.name)
+        self.summaries = root / 'summaries'
+        self.summaries.mkdir()
+        Config.SUMMARIES_DIR = str(self.summaries)
+        Config.TIMESHEET_TEMPLATE = ''
+        self.template = root / 'tpl.xlsx'
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws['A7'], ws['A8'], ws['A11'], ws['A14'], ws['A15'] = 'PROJECT', 'DDH - K•HERO', 'DAILY TOTAL', 'PROJECT', 'DDH - K•HERO'
+        wb.save(self.template)
+
+    def test_export_writes_a_new_file_and_remembers_the_template(self):
+        self.cfg_path.write_text('poll_interval = 300\n')
+        (self.summaries / '2026-09-24.md').write_text('## Progetto K-HERO\nSviluppo (1.5h) [khero]\n\nTotal: 1.5h\n')
+        r = self.api.export_timesheet('2026-09', str(self.template), 'lines', True)
+        self.assertTrue(r['ok'], r)
+        self.assertTrue(Path(r['path']).exists())
+        self.assertEqual(Path(r['path']).parent, Path(self.tmp.name) / 'exports')
+        self.assertEqual(Config.TIMESHEET_TEMPLATE, str(self.template))
+        self.assertEqual(tomllib.loads(self.cfg_path.read_text())['timesheet_template'], str(self.template))
+
+    def test_no_config_file_is_not_created_by_an_export(self):
+        (self.summaries / '2026-09-24.md').write_text('## Progetto K-HERO\nSviluppo (1.5h)\n')
+        self.assertTrue(self.api.export_timesheet('2026-09', str(self.template))['ok'])
+        self.assertFalse(self.cfg_path.exists())
+
+    def test_month_without_summaries_is_an_error_and_leaves_no_file(self):
+        r = self.api.export_timesheet('2026-09', str(self.template))
+        self.assertFalse(r['ok'])
+        self.assertFalse((Path(self.tmp.name) / 'exports').exists() and any((Path(self.tmp.name) / 'exports').iterdir()))
+
+    def test_missing_template_and_bad_month_are_rejected(self):
+        self.assertFalse(self.api.export_timesheet('2026-09', '/nope.xlsx')['ok'])
+        self.assertFalse(self.api.export_timesheet('settembre', str(self.template))['ok'])
+
+    def test_reveal_only_accepts_exported_files(self):
+        self.assertFalse(self.api.reveal_in_finder('/etc/hosts')['ok'])
+
+    def test_set_config_key_replaces_or_prepends_without_touching_the_rest(self):
+        self.cfg_path.write_text('poll_interval = 300\n[categories]\ncoding = ["Terminal"]\n')
+        app._set_config_key('timesheet_template', '/a.xlsx')
+        app._set_config_key('timesheet_template', '/b.xlsx')
+        data = tomllib.loads(self.cfg_path.read_text())
+        self.assertEqual(data['timesheet_template'], '/b.xlsx')
+        self.assertEqual(data['poll_interval'], 300)
+        self.assertEqual(data['categories']['coding'], ['Terminal'])

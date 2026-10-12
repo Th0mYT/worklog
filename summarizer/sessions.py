@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from config import Config
-from logger.extractors import build_repo_index, classify_domain, domain_of, keeps_detail, match_repo
+from logger.extractors import IDE_NON_PROJECT, build_repo_index, classify_domain, domain_of, keeps_detail, match_repo
 from logger.timeutil import parse_ts
 
 SESSION_GAP = timedelta(minutes=30)
@@ -142,7 +142,9 @@ class Block:
         weight: Counter = Counter()
         for s in self.samples:
             p = s.entry.get('project')
-            if p:
+            # a repo/folder name is one token: "Welcome to PyCharm" or a dialog title
+            # in an old log is a window title that was read as a project
+            if p and not re.search(r'\s', p) and not IDE_NON_PROJECT.match(p):
                 weight[p] += s.minutes
         for c in self.commits:
             r = c.entry.get('repo')

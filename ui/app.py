@@ -1163,6 +1163,30 @@ _HTML = """<!DOCTYPE html>
           <div id="progress-hint" class="progress-hint"></div>
         </div>
 
+        <div id="export-panel" class="add-record-form" style="display:none">
+          <div class="add-record-row">
+            <input type="month" id="export-month" title="Month to export">
+            <select id="export-style" class="inline" title="How the notes are written">
+              <option value="lines">One line per activity</option>
+              <option value="day">One line per day</option>
+            </select>
+            <label style="font-size:12px;display:flex;align-items:center;gap:4px">
+              <input type="checkbox" id="export-refs" checked> references
+            </label>
+          </div>
+          <div class="add-record-row">
+            <input type="text" id="export-template" class="add-note-input" style="flex:1"
+                   placeholder="Timesheet workbook used as the layout (.xlsx)">
+            <button class="btn-gray btn-sm" onclick="chooseTemplate()">Choose…</button>
+          </div>
+          <div class="add-record-row">
+            <button class="btn-blue btn-sm" id="btn-export-run" onclick="runExport()">Export</button>
+            <button class="btn-gray btn-sm" onclick="toggleExport()">Close</button>
+            <button class="btn-ghost" id="btn-export-reveal" style="display:none" onclick="revealExport()">Show in Finder</button>
+          </div>
+          <pre id="export-result" style="display:none;margin:0;font-size:11px;white-space:pre-wrap;-webkit-user-select:text;user-select:text"></pre>
+        </div>
+
         <div id="summary-output" class="summary-output">
           <p class="no-logs">Generate a summary to see it here…</p>
         </div>
@@ -1181,6 +1205,7 @@ _HTML = """<!DOCTYPE html>
             </select>
           </div>
           <div class="log-footer-right">
+            <button class="btn-ghost" onclick="toggleExport()">Export month</button>
             <button class="btn-ghost" onclick="copyOutput()">Copy</button>
           </div>
         </div>
@@ -2472,6 +2497,63 @@ _HTML = """<!DOCTYPE html>
     showToast('Tags updated', 'ok');
   }
 
+  // ── timesheet export ─────────────────────────────────────────────────────────
+
+  let _exportPath = '';
+
+  async function toggleExport() {
+    const panel = document.getElementById('export-panel');
+    if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+    try {
+      const d = await api.get_export_defaults(document.getElementById('action-date').value);
+      document.getElementById('export-month').value = d.month;
+      document.getElementById('export-template').value = d.template || '';
+    } catch (e) { showToast('Could not load export settings', 'error'); return; }
+    document.getElementById('export-result').style.display = 'none';
+    document.getElementById('btn-export-reveal').style.display = 'none';
+    panel.style.display = 'flex';
+  }
+
+  async function chooseTemplate() {
+    const r = await api.choose_template();
+    if (r && r.ok) document.getElementById('export-template').value = r.path;
+    else if (r && !r.cancelled) showToast((r && r.error) || 'Could not open the file dialog', 'error');
+  }
+
+  async function runExport() {
+    const btn = document.getElementById('btn-export-run');
+    const out = document.getElementById('export-result');
+    btn.disabled = true;
+    try {
+      const r = await api.export_timesheet(
+        document.getElementById('export-month').value,
+        document.getElementById('export-template').value.trim(),
+        document.getElementById('export-style').value,
+        document.getElementById('export-refs').checked);
+      out.style.display = 'block';
+      if (!r || !r.ok) {
+        out.textContent = (r && r.error) || 'Export failed';
+        document.getElementById('btn-export-reveal').style.display = 'none';
+        showToast('Export failed', 'error');
+        return;
+      }
+      _exportPath = r.path;
+      out.textContent = r.output;
+      document.getElementById('btn-export-reveal').style.display = 'inline-block';
+      showToast('Timesheet exported', 'ok');
+    } catch (e) {
+      out.style.display = 'block';
+      out.textContent = String(e);
+      showToast('Export failed', 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function revealExport() {
+    if (_exportPath) await api.reveal_in_finder(_exportPath);
+  }
+
   // ── manual add record ────────────────────────────────────────────────────────
 
   let _detailDate = '';
@@ -2701,6 +2783,22 @@ def _config_file() -> dict:
         return tomllib.loads(_CONFIG_PATH.read_text())
     except (OSError, tomllib.TOMLDecodeError):
         return {}
+
+
+def _set_config_key(key: str, value: str) -> None:
+    """Set a top-level string key in config.toml in place, leaving everything else as it is."""
+    import re
+    line = f'{key} = {_toml_str(value)}'
+    try:
+        text = _CONFIG_PATH.read_text()
+    except OSError:
+        return          # no config yet: creating one here would make the app think it is set up
+    pattern = re.compile(rf'^{re.escape(key)}\s*=.*$', re.MULTILINE)
+    if pattern.search(text):
+        text = pattern.sub(lambda _: line, text, count=1)
+    else:
+        text = line + '\n' + text          # top-level keys must come before any [table]
+    _CONFIG_PATH.write_text(text)
 
 
 def _preserved_keys() -> dict:
@@ -3399,6 +3497,69 @@ class _API:
         output = _merge(r.stdout, r.stderr)
         return {"ok": r.returncode == 0, "output": output}
 
+    # ── timesheet export ──────────────────────────────────────────────────────
+
+    def get_export_defaults(self, date: str = '') -> dict:
+        template = Config.TIMESHEET_TEMPLATE
+        month = (date or datetime.now().strftime('%Y-%m-%d'))[:7]
+        return {"template": template, "template_exists": bool(template) and Path(template).exists(),
+                "month": month, "exports_dir": str(Path(Config.SUMMARIES_DIR).parent / 'exports')}
+
+    def choose_template(self) -> dict:
+        """Let the user pick the timesheet workbook (any month) used as the layout."""
+        win = getattr(self, '_window', None)
+        if win is None:
+            return {"ok": False, "error": "no window"}
+        try:
+            kind = getattr(getattr(webview, 'FileDialog', None), 'OPEN', None) or webview.OPEN_DIALOG
+            picked = win.create_file_dialog(kind, allow_multiple=False,
+                                            file_types=('Excel workbook (*.xlsx)',))
+        except Exception as exc:  # noqa: BLE001 - a dialog failure must not break the UI
+            return {"ok": False, "error": str(exc)}
+        if not picked:
+            return {"ok": False, "cancelled": True}
+        return {"ok": True, "path": str(picked[0] if isinstance(picked, (list, tuple)) else picked)}
+
+    def export_timesheet(self, month: str, template: str = '', style: str = 'lines', refs: bool = True) -> dict:
+        """Fill a copy of the shared timesheet for `month` (YYYY-MM) from the saved summaries."""
+        from summarizer.timesheet_export import default_out, export_month
+        try:
+            year, mon = (int(x) for x in str(month).split('-'))
+            datetime(year, mon, 1)
+        except (ValueError, TypeError):
+            return {"ok": False, "error": "month must be YYYY-MM"}
+        template = (template or Config.TIMESHEET_TEMPLATE or '').strip()
+        if not template or not Path(template).expanduser().exists():
+            return {"ok": False, "error": "choose the timesheet workbook to use as the layout"}
+        if style not in ('lines', 'day'):
+            style = 'lines'
+        tpl = Path(template).expanduser()
+        out = default_out(year, mon)
+        try:
+            report = export_month(year, mon, tpl, out, style=style, refs=bool(refs))
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "error": str(exc)}
+        if tpl.as_posix() != Config.TIMESHEET_TEMPLATE:
+            try:
+                _set_config_key('timesheet_template', str(tpl))
+                Config.TIMESHEET_TEMPLATE = str(tpl)
+            except OSError:
+                pass
+        if not report.days_with_summary:
+            out.unlink(missing_ok=True)
+            return {"ok": False, "error": f"no saved summaries for {month} — generate them first"}
+        return {"ok": True, "path": str(out), "output": report.render(),
+                "pending": round(sum(h for _, _, h in report.pending), 2)}
+
+    def reveal_in_finder(self, path: str) -> dict:
+        """Show an exported file in Finder (only files inside the exports folder)."""
+        exports = (Path(Config.SUMMARIES_DIR).parent / 'exports').resolve()
+        target = Path(path).resolve()
+        if exports not in target.parents or not target.exists():
+            return {"ok": False, "error": "not an exported file"}
+        subprocess.Popen(['open', '-R', str(target)])
+        return {"ok": True}
+
     def copy_to_clipboard(self, text: str) -> dict:
         # A GUI app has no UTF-8 locale of its own: without one pbcopy decodes as MacRoman.
         r = subprocess.run(['pbcopy'], input=text, text=True, encoding='utf-8', env=self._subprocess_env())
@@ -3511,6 +3672,7 @@ def main() -> None:
         "worklog", html=_HTML, js_api=api,
         width=560, height=820, min_size=(400, 560), resizable=True,
     )
+    api._window = window
     # Event handlers must return None (pywebview uses a set for return values;
     # returning a dict raises unhashable type: 'dict')
     window.events.closed += lambda: api._stop_process()

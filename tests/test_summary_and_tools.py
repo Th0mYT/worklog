@@ -234,3 +234,21 @@ class LanguageRule(unittest.TestCase):
             self.assertIn('Write every description in Italian', ds._language_rule())
         with mock.patch.object(Config, 'SUMMARY_LANGUAGE', ''):
             self.assertIn('language of the commit messages', ds._language_rule())
+
+
+class ShortDescriptions(unittest.TestCase):
+    def test_long_descriptions_are_cut_on_a_word_and_lose_the_final_period(self):
+        from summarizer.daily_summary import _clean_description
+        long = 'Sviluppo ' + 'parola ' * 40 + 'fine.'
+        out = _clean_description(long)
+        self.assertLessEqual(len(out), 161)
+        self.assertTrue(out.endswith('…'))
+        self.assertEqual(_clean_description('Fix scope authority.'), 'Fix scope authority')
+
+    def test_browser_only_block_gets_no_reference(self):
+        from datetime import datetime, timedelta
+        from summarizer.daily_summary import _reference
+        from summarizer.sessions import Block, Sample
+        t = datetime(2026, 10, 1, 9)
+        s = Sample(t, t + timedelta(minutes=10), {'app': 'Google Chrome', 'type': 'browser'})
+        self.assertEqual(_reference(Block(None, [s])), '')

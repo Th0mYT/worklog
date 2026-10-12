@@ -146,10 +146,13 @@ What a block shows (most reliable evidence first):
 RULES:
 1. Reply with exactly one line per block, in this format and nothing else:
    b1: description
-2. The description is one plain sentence (max ~110 characters) saying WHAT was done —
-   the feature, bug or topic — not which app was open.
-3. Coding blocks: ground it in the commit messages, branch names and file names. Merge
-   several commits into one coherent description; do not list them all.
+2. The description is ONE short clause (max ~90 characters) saying WHAT was done — the
+   feature, bug or topic — not which app was open. Think of a line in a client timesheet:
+   "Fix authority scope and PR release", not a changelog.
+3. Coding blocks: ground it in the commit messages and branch names, then summarise.
+   Merge several commits into one description; never list them. Do not mention file
+   names, Discord/Slack channel names, window titles, tool or app names, or ticket
+   numbers unless the ticket IS the work.
 4. Meeting blocks: name the meeting when a title is given.
 5. Never invent detail that is not in the block. If the evidence is thin, stay generic
    (e.g. "Development work on <project>").
@@ -172,7 +175,8 @@ _TRAILING_DURATION = re.compile(r'\s*[(\[]\s*\d+(?:\.\d+)?\s*h\s*[)\]]\s*$', re.
 
 def _clean_description(text: str) -> str:
     text = _TRAILING_DURATION.sub('', text.replace('**', '').strip().strip('"\''))
-    return re.sub(r'\s+', ' ', text)[:220].strip()
+    text = re.sub(r'\s+', ' ', text).strip().rstrip('.')
+    return _shorten(text, 160)
 
 
 def parse_descriptions(text: str, valid_ids: set[str]) -> dict[str, str]:
@@ -225,6 +229,10 @@ def _reference(b: Block) -> str:
     repos = b.repos()
     if repos:
         return ', '.join(repos[:2])
+    # A bare browser name says nothing about the work; other apps (Discord, Mail…) do.
+    types = b.minutes_by(lambda e: e.get('type')).most_common(1)
+    if types and types[0][0] == 'browser':
+        return ''
     apps = b.top_apps().most_common(1)
     return apps[0][0] if apps else ''
 

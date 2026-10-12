@@ -287,3 +287,11 @@ class LegacyEntries(unittest.TestCase):
         d = build_day(entries, commesse=[], rules=RULES, unknown_policy='hide', heartbeat=300, repo_index=index)
         self.assertEqual(d.blocks, [])
         self.assertAlmostEqual(d.excluded_minutes['personal-project'], 10, places=1)
+
+
+class References(unittest.TestCase):
+    def test_window_titles_are_not_repos(self):
+        d = day([snap('09:00', project='Welcome to PyCharm'), snap('09:05', project='khero-backend'),
+                 snap('09:10', project='Patch Applying Partly Failed'), snap('09:12', project='Open'),
+                 marker('09:15', 'stop')])
+        self.assertEqual(d.blocks[0].repos(), ["khero-backend"])
