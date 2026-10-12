@@ -25,6 +25,7 @@ remote llm-council instance).
 - [Log format](#log-format)
 - [App categories](#app-categories)
 - [Client work orders (commesse)](#client-work-orders-commesse)
+- [Timesheet export](#timesheet-export)
 - [Summarizer backends](#summarizer-backends)
 - [macOS permissions](#macos-permissions)
 - [Building the app](#building-the-app)
@@ -48,8 +49,9 @@ remote llm-council instance).
 - **Git enrichment** — pulls the day's commits (by author, across explicit repos or whole
   workspace folders) into the same log, tagged per project.
 - **Manual time blocks** — backfill a gap the poller missed, or log time by hand as a point
-  event or a start/end range, with an optional free-text note passed straight into the
-  summarizer prompt.
+  event, a start/end range, or a start time plus a duration in hours — the quick way to record
+  work done away from the computer. A block can carry its own commessa and a free-text note
+  that is passed straight into the summarizer prompt.
 - **Editable project tags** — the poller and git enricher tag entries automatically when a
   configured repo name shows up in the window title, but that match isn't always there (an
   IDE window title that doesn't include the repo folder name, a repo not yet in your
@@ -60,12 +62,22 @@ remote llm-council instance).
   one on the fly) and every entry the poller writes carries that commessa directly, no
   keyword guessing needed — the one way to correctly track work with no repo or window title
   of its own, like team management or a release call. Tracking doesn't start until one is
-  picked; switch commesse mid-day from the status card any time. See
+  picked; switch commesse mid-day from the status card any time. When the repo or project in
+  front clearly belongs to *another* commessa (by keyword), that evidence wins over a picker
+  that was simply left on the previous one. See
   [Client work orders (commesse)](#client-work-orders-commesse).
+- **Personal projects stay off the timesheet** — tag a repo `personal` in `[git_tags]` and
+  everything done in it (window, terminal tab, commits) is left out of the summary and never
+  sent to a backend. See [Privacy](#privacy-what-is-and-isnt-recorded).
+- **Month export** — fills a copy of your shared timesheet workbook (hours per day and
+  commessa, notes per cell, TOTAL formulas) straight from the saved summaries, from the UI or
+  the CLI. See [Timesheet export](#timesheet-export).
 - **AI daily summaries** — five interchangeable backends (Ollama, Claude CLI, Anthropic,
   OpenAI, llm-council), with live progress feedback and a cancel button. Durations, gaps,
   commessa assignment and the total are computed in code; the model only writes one short
-  description per block, so a small local model can't skew the numbers.
+  description per block, so a small local model can't skew the numbers. Set
+  `summary_language` to get every description in one language, whatever language your commits
+  and notes are in.
 - **Configurable categories** — classify apps into `coding`, `meeting`, `browser`, `design`,
   `productivity`, `communication`, or your own custom set.
 - **Native macOS UI** — start/stop the poller, enrich, summarize, browse and edit any day's
@@ -113,7 +125,7 @@ remote llm-council instance).
 ## Requirements
 
 - macOS (the activity poller and browser-tab reader use AppleScript / CoreGraphics)
-- Python 3.11+
+- Python 3.11+ (`openpyxl` is installed with the package; it is only used by the timesheet export)
 - At least one summarizer backend (pick one):
   - **Ollama** (default, fully local) — `ollama pull qwen2.5:7b`
   - **Claude CLI** — `npm install -g @anthropic-ai/claude-code` + auth
@@ -185,6 +197,14 @@ summarizer_backend = "ollama"
 ollama_url          = "http://localhost:11434"
 ollama_model        = "qwen2.5:7b"
 
+# Language of the block descriptions: "it", "en", "Italian"… Leave it out to follow the
+# language of your commit messages and notes (which can mix several).
+# summary_language   = "it"
+
+# A month of your shared timesheet workbook, used as the layout for the month export.
+# Remembered automatically after the first export from the UI.
+# timesheet_template = "~/Documents/Timesheets/Ottobre_2026.xlsx"
+
 # claude_model       = ""                      # leave empty for default model
 # anthropic_api_key  = "sk-ant-…"               # or set ANTHROPIC_API_KEY in env
 # anthropic_model    = "claude-haiku-4-5"
@@ -238,7 +258,10 @@ A native macOS window lets you:
 - **Enrich** — pull today's git commits into the log
 - **Generate Summary** — run the enricher then call the LLM, with live progress output,
   backend-specific hints, and a cancel button to abort mid-request
-- **Browse logs** — view any day's entries, add a manual time block or note, delete
+- **Export month** — fill a copy of your timesheet workbook from the saved summaries (see
+  [Timesheet export](#timesheet-export))
+- **Browse logs** — view any day's entries, add a manual time block (start + end time, or
+  start + hours, with a commessa and a note), delete
   individual entries, mark an entry as personal (🚫, reversible), classify a site as work or
   personal, reset today's log or wipe all logs
 - **Settings** — configure repos/workspaces, git tags, app categories, commesse, browser
@@ -281,6 +304,16 @@ python -m summarizer.daily_summary --backend claude   # override backend
 The command also reports what it left out — private browsing, personal or unclassified
 sites, blocks shorter than 5 minutes — and lists the sites still waiting for a work/personal
 classification.
+
+**Timesheet export**
+
+```bash
+python -m summarizer.timesheet_export --month 2026-10 --template "Ottobre_2026.xlsx"
+python -m summarizer.timesheet_export --month 2026-10 --style day --no-refs
+python -m summarizer.timesheet_export --month 2026-10 --map "Progetto K-HERO=DDH - K•HERO"
+```
+
+See [Timesheet export](#timesheet-export) for what it writes and how rows are matched.
 
 **Clean up old logs**
 
@@ -353,10 +386,13 @@ you with the 🚫 button — keeps it out of every summary.
 
 **Manual entry** (added from the UI, or by hand):
 ```json
-{"ts": "2026-06-18T14:00:00", "type": "coding", "manual": true, "end_ts": "2026-06-18T15:30:00", "note": "client call prep"}
+{"ts": "2026-06-18T14:00:00", "type": "coding", "manual": true, "end_ts": "2026-06-18T15:30:00", "note": "client call prep", "commessa": "Backend revamp"}
 ```
-`end_ts` and `note` are both optional — omit `end_ts` for a point-in-time entry, omit `note`
-to let the summarizer describe it from context alone.
+`end_ts`, `note` and `commessa` are all optional — omit `end_ts` for a point-in-time entry,
+omit `note` to let the summarizer describe it from context alone. A block with a `commessa`
+is assigned to it directly, like an entry the poller wrote under that active commessa.
+A range block *replaces* any tracked time it overlaps, so place it where the poller saw
+nothing (idle, paused, off the computer).
 
 Commits are read from every local branch and timestamps are stored as local time without an
 offset, so they sort correctly next to poller entries.
@@ -392,6 +428,11 @@ Each app is classified into a category — first match wins. The built-in defaul
 | `design` | Figma, Sketch |
 | `communication` | Slack, Mail, Telegram |
 | `productivity` | Notion, Obsidian |
+
+App names are matched as macOS reports them; the localized names of the built-in terminal
+(`Terminale` on an Italian system) are folded onto `Terminal`, so the repo of the active tab
+is still resolved. Other localized app names need to be listed in `[categories]` as they
+appear in the log.
 
 A `meeting`-category app is further tagged `type: "meeting"` when its window title contains
 a signal word (`call`, `standup`, `voice`, `video`, …) — see `MEETING_WINDOW_SIGNALS` in
@@ -434,12 +475,19 @@ client   = "Beta srl"
 keywords = ["beta", "figma"]
 ```
 
-A commessa matches when one of its `keywords` appears as a whole token in the repo name,
+Keywords are separated by commas, semicolons or new lines. A short keyword such as `khero`
+matches every `khero-*` repo, since a token ends at the first character that isn't a letter
+or digit. A commessa matches when one of its `keywords` appears as a whole token in the repo name,
 branch, IDE project/file, window or page title, tag, note or commit message (`KH-682`
 matches `feature/KH-682-fix` but not `KH-6820`); the client name counts as a keyword only
 when a single commessa has that client. Unassigned work in a repo also takes the commessa of
-that repo's next matching commit (within 2 hours). A picked commessa always wins over a
-keyword match when both apply.
+that repo's next matching commit (within 2 hours).
+
+A picked commessa wins over keyword matches in window titles, tabs and notes. The one
+exception is structural evidence: when the entry's **project, repo or branch** matches the
+keywords of a *different* commessa, that commessa wins — it means the picker was left on the
+previous one. This applies only when the picked commessa has keywords of its own; ad hoc
+picks with none ("Team management") are never overridden.
 
 Everything still unmatched goes under `## Generale`. A commessa can be **archived**
 (a checkbox next to it in Settings › Commesse) instead of deleted — hidden from the picker,
@@ -453,6 +501,37 @@ since that's also how the very first commessa gets created.
 
 ---
 
+## Timesheet export
+
+Fills a copy of your shared timesheet workbook for one month from the saved summaries, so
+nothing has to be copied by hand. In the UI: **Daily summary › Export month**; from the
+command line: `python -m summarizer.timesheet_export` (see [CLI](#cli)).
+
+- **Template** — any month of your timesheet (`.xlsx`) is the layout. It is **never modified**:
+  the result is a new file, `~/.worklog/exports/<Mese>_<anno>.xlsx` (a numeric suffix is added
+  when the name exists). The template path is remembered as `timesheet_template`.
+- **Source** — the saved `summaries/{date}.md` of the month; days without one are listed in
+  the report. Regenerate a day's summary first if the rules or the log changed.
+- **Hours** — the lines of each commessa's section are summed per day and rounded to 0.25 h
+  *once per commessa and day*, not per block.
+- **Rows** — each commessa is matched to a project row by name (token overlap, tolerant of
+  typos like "Alvamiva"); `--map "COMMESSA=Row label"` forces a pair. The notes go to the
+  matching row of the TASK NOTES block.
+- **Left out of the grid** — unassigned work (`Generale`) and commesse with no row go to a
+  second sheet, **Da assegnare**, with date, hours and text, so nothing is guessed into a
+  project.
+- **Totals** — every project row gets its TOTAL formula, so a row added by hand no longer
+  drops out of the monthly total.
+- **Text** — `--style lines` (default) writes one line per activity as
+  `description (1.5h) [refs]`, durations normalised and repeats merged; `--style day` writes
+  one line per commessa and day. `--no-refs` drops the `[repo, app]` part. In the UI these are
+  the *style* menu and the *references* box.
+
+Time away from the computer is not in the logs: add it as a manual block with a commessa
+(start time plus hours) and it flows into the export like any other line.
+
+---
+
 ## Summarizer backends
 
 | Backend | Config value | Notes |
@@ -462,6 +541,9 @@ since that's also how the very first commessa gets created.
 | Anthropic | `anthropic` | Direct Messages API. Requires `anthropic_api_key` in config or `ANTHROPIC_API_KEY` env var. Defaults to `claude-haiku-4-5`. |
 | OpenAI | `openai` | Requires `openai_api_key` in config or `OPENAI_API_KEY` env var. |
 | llm-council | `council` | Multi-model synthesis. Needs a running [llm-council](https://github.com/Th0mYT/llm-council) instance. |
+
+Descriptions are asked as one short clause per block (no file names, channel names or window
+titles). `summary_language` fixes their language.
 
 ---
 
@@ -475,7 +557,12 @@ since that's also how the very first commessa gets created.
 | Page on a `personal` domain, or an unclassified one | The domain only, and it is left out of the summary. |
 | Chat / mail window titles (`communication` category) | Never — only the app name. |
 | Apps in `ignore_apps` (worklog itself by default) | Time is excluded, no title. |
+| Work in a repo tagged `personal` in `[git_tags]` | Logged, but left out of the summary and the prompt; counted as "personal projects" in the left-out report. |
 | While paused | Nothing at all. |
+
+A repo is judged by today's config, including in old logs: tag it `personal` and its past
+entries drop out too. `ignore_apps` only matches app *names* — to leave a project out, tag its
+repo.
 
 Everything left out is also withheld from the prompt, so it never reaches a cloud backend.
 `--print-prompt` (or the **Prompt** button) shows exactly what would be sent.
@@ -572,6 +659,8 @@ Or open `dist/worklog-<version>.dmg` and drag the app into `/Applications`.
 - To build without the DMG step, run `python setup.py py2app` directly after
   `make_icon.py`; the result is still `dist/worklog.app` (unsigned and without the extra
   dylibs, so prefer the script for anything you'll actually run).
+- The bundle includes `openpyxl` (timesheet export); `setup.py` lists it with its helper
+  `et_xmlfile` under `packages`.
 - `PYTHON=/path/to/python bash build_dmg.sh` overrides which interpreter builds the app
   (defaults to `.venv/bin/python`).
 - The script temporarily renames `pyproject.toml` while py2app runs (py2app rejects the

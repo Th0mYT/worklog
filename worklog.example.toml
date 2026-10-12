@@ -39,6 +39,14 @@ git_repos = [
     "/Users/you/projects/repo-two",
 ]
 
+# Language of the block descriptions ("it", "en", "Italian"…). Leave it out to follow the
+# language of your commit messages / notes.
+# summary_language = "it"
+
+# A month of your shared timesheet workbook, used as the layout for the month export
+# (UI: Daily summary › Export month; CLI: python -m summarizer.timesheet_export).
+# timesheet_template = "~/Documents/Timesheets/Ottobre_2026.xlsx"
+
 # Summarizer backend: "ollama" (default, single model) or "council" (llm-council, needs beefy hardware)
 summarizer_backend = "ollama"
 
@@ -82,7 +90,7 @@ openai_model = "gpt-4o-mini"
 # [[commesse]]
 # name     = "Backend revamp"
 # client   = "Acme Corp"
-# keywords = ["acme", "backend-api"]
+# keywords = ["acme", "backend-api"]   # ',' ';' or new line separated in the UI
 # archived = false   # hidden from the picker only; past logs still match it
 #
 # [[commesse]]
@@ -102,3 +110,10 @@ ask_commessa_on_start = true
 # [browser_rules]
 # work     = ["github.com", "gitlab.com", "atlassian.net", "localhost"]
 # personal = ["twitch.tv", "netflix.com"]
+
+# Tags go in a table, so keep this after every top-level key above.
+# Optional tags per repo. A repo tagged "personal" is left out of every summary (and never
+# sent to a backend) — the way to keep side projects off a client timesheet.
+# [git_tags]
+# "/Users/you/projects/repo-one" = ["client-a", "backend"]
+# "/Users/you/projects/repo-two" = ["personal"]
